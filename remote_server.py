@@ -127,14 +127,26 @@ class RemoteControlServer:
     async def handle_presentation_toggle(self, data):
         """프레젠테이션 모드 전환 처리"""
         proc_info = self.get_active_window_process()
+        print(f"Current process: {proc_info}")  # 디버깅용 로그 추가
+        
+        key = data.get('key')
+        print(f"Received key: {key}")  # 디버깅용 로그 추가
+
         if not proc_info:
+            # 프레젠테이션 프로그램이 실행중이지 않을 때는 기본 키 전송
+            pyautogui.press(key)
             return
 
         if self.os_type == 'Windows':
             if 'powerpnt' in proc_info['name']:
-                pyautogui.press('f5' if data.get('key') == 'f5' else 'esc')
-            else:
-                pyautogui.hotkey('ctrl', 'l' if data.get('key') == 'f5' else 'esc')
+                print("PowerPoint detected, sending F5/ESC")
+                pyautogui.press(key)
+            elif any(viewer in proc_info['name'] for viewer in ['acrord32', 'msedge', 'chrome']):
+                print("PDF viewer detected, sending Ctrl+L/ESC")
+                if key == 'f5':
+                    pyautogui.hotkey('ctrl', 'l')
+                else:
+                    pyautogui.press('esc')
         
         elif self.os_type == 'Darwin':  # macOS
             if 'keynote' in proc_info['name']:

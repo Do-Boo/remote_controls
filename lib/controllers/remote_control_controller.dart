@@ -218,6 +218,7 @@ class RemoteControlController extends GetxController {
   void togglePresentationMode() {
     if (!isConnected.value) return;
     isPresentationMode.toggle();
+    print('Toggling presentation mode: ${isPresentationMode.value}'); // 디버깅용 로그 추가
     _wsService.sendCommand({
       'type': 'keyboard',
       'key': isPresentationMode.value ? 'f5' : 'esc',
