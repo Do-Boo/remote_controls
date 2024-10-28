@@ -29,15 +29,18 @@ class _QRScanViewState extends State<QRScanView> {
     super.dispose();
   }
 
-  void connectWithCode(String code) async {
-    if (code.isNotEmpty) {
-      print('QRScanView: Attempting to connect with code: $code');
+  void connectWithCode(String rawData) async {
+    if (rawData.isNotEmpty) {
+      print('QRScanView: Raw data received: $rawData');
       try {
-        final controller = Get.find<RemoteControlController>();
-        controller.connectWithCode(code);
+        // JSON 형식인지 확인
+        if (rawData.startsWith('{')) {
+          final jsonData = json.decode(rawData);
+          print('QRScanView: Parsed JSON data: $jsonData');
+        }
 
-        // 연결 성공 시 RemoteControlView로 자동 이동
-        // (RemoteControlController의 ever() 리스너에서 처리됨)
+        final controller = Get.find<RemoteControlController>();
+        controller.connectWithCode(rawData);
       } catch (e) {
         print('QRScanView connection error: $e');
         Get.snackbar(
@@ -120,20 +123,8 @@ class _QRScanViewState extends State<QRScanView> {
                   for (final barcode in barcodes) {
                     final String? rawValue = barcode.rawValue;
                     if (rawValue != null) {
-                      try {
-                        // QR 코드에서 JSON 데이터 파싱
-                        final qrData = jsonDecode(rawValue);
-                        if (qrData['code'] != null) {
-                          // 연결 코드 추출 및 연결 시도
-                          connectWithCode(qrData['code']);
-                        }
-                      } catch (e) {
-                        print('QR code parsing error: $e');
-                        // 일반 텍스트로 처리 (6자리 코드인 경우)
-                        if (rawValue.length == 6) {
-                          connectWithCode(rawValue);
-                        }
-                      }
+                      print('Scanned QR data: $rawValue');
+                      connectWithCode(rawValue);
                     }
                   }
                 } catch (e) {

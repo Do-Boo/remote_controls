@@ -132,11 +132,14 @@ class RemoteControlServer:
                         x = int(float(data['x']) * self.screen_width)
                         y = int(float(data['y']) * self.screen_height)
                         print(f"    Position: ({x}, {y})")
-                        if data.get('is_gyro'):
-                            print("    Mode: Gyroscope")
+                        
+                        # 즉시 마우스 이동
+                        pyautogui.moveTo(x, y, duration=0)  # duration=0으로 설정하여 즉시 이동
+                        
                         if data.get('is_laser'):
                             print("    Laser mode: On")
-                        pyautogui.moveTo(x, y)
+                        if data.get('is_gyro'):
+                            print("    Mode: Gyroscope")
                     
                     elif msg_type == 'mouse_click':
                         click_type = data.get('click_type', 'left')
@@ -151,7 +154,24 @@ class RemoteControlServer:
                     elif msg_type == 'keyboard':
                         key = data.get('key', '')
                         print(f"    Key: {key}")
-                        pyautogui.press(key)
+                        try:
+                            # 키 입력 전에 짧은 대기
+                            await asyncio.sleep(0.1)
+                            
+                            if key == 'right':
+                                pyautogui.press('right')
+                            elif key == 'left':
+                                pyautogui.press('left')
+                            elif key == 'b':
+                                pyautogui.press('b')
+                            elif key == 'w':
+                                pyautogui.press('w')
+                            else:
+                                pyautogui.press(key)
+                                
+                            print(f"    Pressed key: {key}")
+                        except Exception as e:
+                            print(f"    Error pressing key: {e}")
                     
                     elif msg_type == 'disconnect':
                         print(f"    Client requested disconnect")

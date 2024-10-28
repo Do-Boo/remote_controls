@@ -15,14 +15,6 @@ class RemoteControlView extends GetView<RemoteControlController> {
         backgroundColor: Colors.black,
         title: const Text('리모컨'),
         actions: [
-          // 자이로 모드 토글 버튼
-          Obx(() => IconButton(
-                icon: Icon(
-                  Icons.screen_rotation,
-                  color: controller.gyroEnabled.value ? Colors.blue : Colors.white,
-                ),
-                onPressed: controller.toggleGyroMode,
-              )),
           IconButton(
             icon: const Icon(Icons.link_off),
             onPressed: () {
@@ -35,97 +27,70 @@ class RemoteControlView extends GetView<RemoteControlController> {
       body: SafeArea(
         child: Column(
           children: [
-            // 자이로 모드 감도 조절 슬라이더
-            Obx(() => AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 200),
-                  child: controller.gyroEnabled.value
-                      ? Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                          child: Column(
-                            children: [
-                              const Text(
-                                '자이로 감도',
-                                style: TextStyle(color: Colors.white70),
-                              ),
-                              Row(
-                                children: [
-                                  const Icon(Icons.speed, color: Colors.white),
-                                  Expanded(
-                                    child: Slider(
-                                      value: controller.sensitivity.value,
-                                      min: 0.5,
-                                      max: 5.0,
-                                      divisions: 9, // 0.5 단위로 조절 가능
-                                      label: controller.sensitivity.value.toStringAsFixed(1),
-                                      onChanged: controller.adjustSensitivity,
-                                      activeColor: Colors.blue,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ],
-                          ),
-                        )
-                      : const SizedBox.shrink(),
-                )),
             // 메인 제어 영역
             Expanded(
               child: GestureDetector(
                 onPanUpdate: (details) {
-                  if (!controller.gyroEnabled.value) {
+                  // 레이저 포인터 모드일 때만 마우스 움직임 활성화
+                  if (controller.isLaserMode.value) {
                     controller.updateMousePosition(
                       details.localPosition,
                       screenSize,
                     );
                   }
                 },
-                onPanStart: (_) => controller.startDrag(),
-                onPanEnd: (_) => controller.endDrag(),
-                onTapUp: (_) => controller.sendClick('left'),
-                onDoubleTapDown: (_) => controller.sendClick('double'),
-                onSecondaryTapUp: (_) => controller.sendClick('right'),
-                onLongPress: controller.toggleLaserMode,
-                onLongPressEnd: (_) => controller.toggleLaserMode(),
+                onTapUp: (details) {
+                  if (controller.isLaserMode.value) {
+                    controller.sendClick('left');
+                  } else {
+                    // 화면 왼쪽/오른쪽 탭에 따라 이전/다음 슬라이드
+                    if (details.localPosition.dx < screenSize.width / 2) {
+                      controller.previousSlide();
+                    } else {
+                      controller.nextSlide();
+                    }
+                  }
+                },
                 child: Container(
                   color: Colors.transparent,
-                  child: Row(
-                    children: [
-                      // 이전 슬라이드 영역
-                      Expanded(
-                        child: InkWell(
-                          onTap: controller.previousSlide,
-                          splashColor: Colors.white24,
-                          highlightColor: Colors.white10,
-                          child: const Center(
-                            child: Icon(
-                              Icons.arrow_back_ios,
+                  child: Obx(() => controller.isLaserMode.value
+                      ? const Center(
+                          child: Text(
+                            '트랙패드 영역',
+                            style: TextStyle(
                               color: Colors.white30,
-                              size: 40,
+                              fontSize: 16,
                             ),
                           ),
-                        ),
-                      ),
-                      Container(
-                        width: 1,
-                        color: Colors.white10,
-                      ),
-                      // 다음 슬라이드 영역
-                      Expanded(
-                        child: InkWell(
-                          onTap: controller.nextSlide,
-                          splashColor: Colors.white24,
-                          highlightColor: Colors.white10,
-                          child: const Center(
-                            child: Icon(
-                              Icons.arrow_forward_ios,
-                              color: Colors.white30,
-                              size: 40,
+                        )
+                      : Row(
+                          children: [
+                            // 이전 슬라이드 영역
+                            const Expanded(
+                              child: Center(
+                                child: Icon(
+                                  Icons.arrow_back_ios,
+                                  color: Colors.white30,
+                                  size: 40,
+                                ),
+                              ),
                             ),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
+                            Container(
+                              width: 1,
+                              color: Colors.white10,
+                            ),
+                            // 다음 슬라이드 영역
+                            const Expanded(
+                              child: Center(
+                                child: Icon(
+                                  Icons.arrow_forward_ios,
+                                  color: Colors.white30,
+                                  size: 40,
+                                ),
+                              ),
+                            ),
+                          ],
+                        )),
                 ),
               ),
             ),

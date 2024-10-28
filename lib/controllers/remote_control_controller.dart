@@ -16,7 +16,7 @@ class RemoteControlController extends GetxController {
 
   // 자이로 센서 관련 변수
   final gyroEnabled = false.obs;
-  final sensitivity = 2.0.obs;
+  final sensitivity = 1.0.obs; // 기본값을 더 낮게 설정
   final isCalibrating = false.obs;
 
   StreamSubscription? _gyroSubscription;
@@ -28,6 +28,8 @@ class RemoteControlController extends GetxController {
   static const _updateInterval = Duration(milliseconds: 16);
 
   Timer? _mouseMoveTimer;
+
+  Offset? _lastPosition; // 마지막 터치 위치 저장용 변수 추가
 
   @override
   void onInit() {
@@ -98,7 +100,6 @@ class RemoteControlController extends GetxController {
       _gyroSubscription = gyroscopeEvents.listen(
         (GyroscopeEvent event) {
           if (!gyroEnabled.value || !isConnected.value) return;
-
           if (isCalibrating.value) return;
 
           Vector3 currentEvent = Vector3(event.x, event.y, event.z);
@@ -121,8 +122,9 @@ class RemoteControlController extends GetxController {
           double currentX = mousePosition.value['x'] ?? 0.0;
           double currentY = mousePosition.value['y'] ?? 0.0;
 
-          double deltaX = -currentEvent.y * sensitivity.value;
-          double deltaY = currentEvent.x * sensitivity.value;
+          // 감도를 더 낮추고 Y축 반전
+          double deltaX = -currentEvent.y * (sensitivity.value * 0.3); // 감도 낮춤
+          double deltaY = -currentEvent.x * (sensitivity.value * 0.3); // Y축 반전
 
           double newX = (currentX + deltaX).clamp(0.0, 1.0);
           double newY = (currentY + deltaY).clamp(0.0, 1.0);
@@ -139,66 +141,108 @@ class RemoteControlController extends GetxController {
               'is_gyro': true,
             });
           });
-
-          _lastGyroEvent = currentEvent;
         },
         onError: (error) {
           print('Gyroscope error: $error');
           gyroEnabled.value = false;
           Get.snackbar(
             '센서 오류',
-            '자이로스코프를 사용할 수 없습니다.',
+            '자이로 센서를 사용할 수 없습니다.',
             snackPosition: SnackPosition.BOTTOM,
           );
         },
-        cancelOnError: true,
       );
     } catch (e) {
       print('Gyroscope initialization error: $e');
-      gyroEnabled.value = false;
-      Get.snackbar(
-        '센서 오류',
-        '자이로스코프를 사용할 수 없습니다.',
-        snackPosition: SnackPosition.BOTTOM,
-      );
     }
   }
 
-  Future<void> connectWithCode(String code) async {
+  Future<void> connectWithCode(String input) async {
     try {
-      print('Attempting to connect with code: $code');
+      print('Attempting to connect with input: $input');
 
-      // QR 코드에서 받은 데이터로 연결
-      final qrData = json.decode(code);
-      final ip = qrData['ip'];
-      final port = qrData['port'];
-      final serverCode = qrData['code'];
+      Map<String, dynamic> connectionData;
 
-      await _wsService.connectToServer(ip, port, serverCode);
-      isConnected.value = true;
-      print('Successfully connected to server');
+      // JSON 형식인 경우 (QR 코드 스캔)
+      if (input.startsWith('{')) {
+        connectionData = json.decode(input);
+      }
+      // 6자리 코드인 경 (수동 입력)
+      else {
+        // 서버에서 받은 IP와 포트 사용
+        connectionData = {
+          'code': input,
+          'ip': '192.168.0.x', // 실제 서버 IP로 변경 필요
+          'port': 8080 // 실제 서버 포트로 변경 필요
+        };
+      }
+
+      print('Connecting with data: $connectionData');
+
+      await _wsService.connectToServer(connectionData['ip'].toString(), connectionData['port'] as int, connectionData['code'].toString());
+
+      if (_wsService.isConnected.value) {
+        isConnected.value = true;
+        print('Successfully connected to server');
+        Get.snackbar(
+          '연결 성공',
+          '서버에 연결되었습니다.',
+          snackPosition: SnackPosition.BOTTOM,
+        );
+      } else {
+        throw Exception('WebSocket connection failed');
+      }
     } catch (e) {
       print('Connection error: $e');
       isConnected.value = false;
+      Get.snackbar(
+        '연결 오류',
+        '서버 연결에 실패했습니다: ${e.toString()}',
+        snackPosition: SnackPosition.BOTTOM,
+      );
       rethrow;
     }
   }
 
   void updateMousePosition(Offset position, Size screenSize) {
-    if (!isConnected.value || gyroEnabled.value) return;
+    if (!isConnected.value) return;
 
-    mousePosition.value = {'x': position.dx / screenSize.width, 'y': position.dy / screenSize.height};
+    if (_lastPosition == null) {
+      _lastPosition = position;
+      return;
+    }
 
-    _mouseMoveTimer?.cancel();
-    _mouseMoveTimer = Timer(_updateInterval, () {
-      _wsService.sendCommand({
-        'type': 'mouse_move',
-        'x': mousePosition.value['x'],
-        'y': mousePosition.value['y'],
-        'is_laser': isLaserMode.value,
-        'is_gyro': false,
-      });
+    // 이전 위치와의 차이를 계산
+    final deltaX = (position.dx - _lastPosition!.dx) / screenSize.width;
+    final deltaY = (position.dy - _lastPosition!.dy) / screenSize.height;
+
+    // 현재 마우스 위치에서 델타값을 더함
+    final newX = (mousePosition.value['x']! + (deltaX * 1.5)).clamp(0.0, 1.0); // 감도 조절을 위해 1.5 곱함
+    final newY = (mousePosition.value['y']! + (deltaY * 1.5)).clamp(0.0, 1.0);
+
+    // 위치 업데이트
+    mousePosition.value = {'x': newX, 'y': newY};
+    _lastPosition = position;
+
+    // 즉시 전송
+    _wsService.sendCommand({
+      'type': 'mouse_move',
+      'x': newX,
+      'y': newY,
+      'is_laser': isLaserMode.value,
+      'is_gyro': false,
+      'immediate': true,
     });
+  }
+
+  void startDrag() {
+    _lastPosition = null; // 드래그 시작시 마지막 위치 초기화
+    print('Started dragging');
+  }
+
+  void endDrag() {
+    _lastPosition = null; // 드래그 종료시 마지막 위치 초기화
+    print('Ended dragging');
   }
 
   void sendClick(String type) {
@@ -212,7 +256,7 @@ class RemoteControlController extends GetxController {
 
   void sendKeyCommand(String key) {
     if (!isConnected.value) return;
-
+    print('Sending key command: $key');
     _wsService.sendCommand({
       'type': 'keyboard',
       'key': key,
@@ -220,49 +264,56 @@ class RemoteControlController extends GetxController {
   }
 
   void nextSlide() {
-    sendKeyCommand('right_arrow');
+    if (!isConnected.value) return;
+    print('Sending next slide command');
+    _wsService.sendCommand({
+      'type': 'keyboard',
+      'key': 'right', // 'right_arrow' 대신 'right' 사용
+    });
   }
 
   void previousSlide() {
-    sendKeyCommand('left_arrow');
+    if (!isConnected.value) return;
+    print('Sending previous slide command');
+    _wsService.sendCommand({
+      'type': 'keyboard',
+      'key': 'left', // 'left_arrow' 대신 'left' 사용
+    });
   }
 
   void toggleBlackScreen() {
+    if (!isConnected.value) return;
+    print('Sending black screen command');
     sendKeyCommand('b');
   }
 
   void toggleWhiteScreen() {
+    if (!isConnected.value) return;
+    print('Sending white screen command');
     sendKeyCommand('w');
   }
 
   void togglePresentationMode() {
+    if (!isConnected.value) return;
+
     isPresentationMode.toggle();
-    _wsService.sendCommand({
-      'type': 'presentation_mode',
-      'enabled': isPresentationMode.value,
-    });
+    if (isPresentationMode.value) {
+      // 프레젠테이션 시작 (F5)
+      _wsService.sendCommand({
+        'type': 'keyboard',
+        'key': 'f5',
+      });
+    } else {
+      // 프레젠테이션 종료 (ESC)
+      _wsService.sendCommand({
+        'type': 'keyboard',
+        'key': 'esc',
+      });
+    }
   }
 
   void toggleLaserMode() {
     isLaserMode.toggle();
-  }
-
-  void startDrag() {
-    if (!isConnected.value) return;
-
-    _wsService.sendCommand({
-      'type': 'mouse_drag',
-      'action': 'start',
-    });
-  }
-
-  void endDrag() {
-    if (!isConnected.value) return;
-
-    _wsService.sendCommand({
-      'type': 'mouse_drag',
-      'action': 'end',
-    });
   }
 
   void adjustVolume(double delta) {
@@ -280,6 +331,7 @@ class RemoteControlController extends GetxController {
     _wsService.sendCommand({
       'type': 'disconnect',
     });
+    _wsService.disconnect(); // WebSocket 연결 종료
     isConnected.value = false;
     isPresentationMode.value = false;
     isLaserMode.value = false;

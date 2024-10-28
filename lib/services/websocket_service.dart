@@ -13,6 +13,9 @@ class WebSocketService extends GetxService {
 
       _channel = WebSocketChannel.connect(Uri.parse(wsUrl));
 
+      // 연결 후 인증 메시지 전송
+      _channel!.sink.add(json.encode({'type': 'auth', 'code': code}));
+
       // 연결 상태 모니터링
       _channel!.stream.listen(
         (message) {
@@ -20,6 +23,7 @@ class WebSocketService extends GetxService {
           final data = json.decode(message);
           if (data['type'] == 'connection_status') {
             isConnected.value = data['status'] == 'connected';
+            print('Connection status: ${isConnected.value}');
           }
         },
         onError: (error) {
