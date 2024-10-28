@@ -8,9 +8,8 @@ from aiohttp import web
 import os
 import qrcode
 import socket
-import win32gui  # 윈도우 핸들 관련 기능을 위해 추가
-import win32process
 import psutil
+import platform
 
 class RemoteControlServer:
     def __init__(self, websocket_port=8080, http_port=8081):
@@ -26,7 +25,8 @@ class RemoteControlServer:
         # 마우스 이동 관련 설정
         self.mouse_speed_multiplier = 2.0  # 기본 속도
         
-        self.presentation_mode = False  # 프레젠테이션 모드 상태 추적
+        self.os_type = platform.system()  # 'Windows', 'Darwin' (macOS), 'Linux'
+        self.presentation_mode = False
         
         self._generate_qr_code()
 
@@ -108,31 +108,21 @@ class RemoteControlServer:
     def get_active_window_process(self):
         """현재 실행 중인 프로세스 확인"""
         try:
+            presentation_processes = {
+                'Windows': ['powerpnt.exe', 'acrord32.exe', 'msedge.exe', 'chrome.exe'],
+                'Darwin': ['keynote', 'preview', 'chrome', 'safari'],  # macOS
+                'Linux': ['libreoffice', 'evince', 'chrome', 'firefox']
+            }
+            
+            target_processes = presentation_processes.get(self.os_type, [])
+            
             for proc in psutil.process_iter(['name']):
-                if proc.info['name'].lower() in ['powerpnt.exe', 'acrord32.exe', 'msedge.exe', 'chrome.exe']:
+                if any(p in proc.info['name'].lower() for p in target_processes):
                     return {'name': proc.info['name'].lower()}
             return None
         except Exception as e:
             print(f"Error getting processes: {e}")
             return None
-
-    def is_presentation_active(self):
-        """프레젠테이션 모드 상태 확인"""
-        window_info = self.get_active_window_process()
-        if not window_info:
-            return False
-
-        # PowerPoint 슬라이드 쇼 확인
-        if 'powerpnt' in window_info['name'] and 'slide show' in window_info['title']:
-            return True
-        
-        # PDF 전체화면 확인 (Adobe Reader, Edge, Chrome 등)
-        pdf_viewers = ['acrord32.exe', 'msedge.exe', 'chrome.exe']
-        if any(viewer in window_info['name'] for viewer in pdf_viewers):
-            if 'full screen' in window_info['title'] or '전체 화면' in window_info['title']:
-                return True
-        
-        return False
 
     async def handle_presentation_toggle(self, data):
         """프레젠테이션 모드 전환 처리"""
@@ -140,17 +130,23 @@ class RemoteControlServer:
         if not proc_info:
             return
 
-        if 'powerpnt.exe' in proc_info['name']:
-            if data.get('key') == 'f5':
-                pyautogui.press('f5')
+        if self.os_type == 'Windows':
+            if 'powerpnt' in proc_info['name']:
+                pyautogui.press('f5' if data.get('key') == 'f5' else 'esc')
             else:
-                pyautogui.press('esc')
+                pyautogui.hotkey('ctrl', 'l' if data.get('key') == 'f5' else 'esc')
         
-        elif proc_info['name'] in ['acrord32.exe', 'msedge.exe', 'chrome.exe']:
-            if data.get('key') == 'f5':
-                pyautogui.hotkey('ctrl', 'l')
+        elif self.os_type == 'Darwin':  # macOS
+            if 'keynote' in proc_info['name']:
+                pyautogui.hotkey('command', 'shift', 'p' if data.get('key') == 'f5' else 'esc')
             else:
-                pyautogui.press('esc')
+                pyautogui.hotkey('command', 'shift', 'f' if data.get('key') == 'f5' else 'esc')
+        
+        else:  # Linux
+            if 'libreoffice' in proc_info['name']:
+                pyautogui.press('f5' if data.get('key') == 'f5' else 'esc')
+            else:
+                pyautogui.hotkey('ctrl', 'l' if data.get('key') == 'f5' else 'esc')
 
     async def handle_websocket(self, websocket):
         """WebSocket 연결 처리"""
