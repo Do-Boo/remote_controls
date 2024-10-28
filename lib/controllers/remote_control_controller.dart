@@ -1,8 +1,8 @@
 import 'dart:async';
-import 'dart:math';
 import 'dart:collection';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
+import 'package:wakelock/wakelock.dart';
 import '../services/websocket_service.dart';
 import 'dart:convert';
 
@@ -23,23 +23,59 @@ class RemoteControlController extends GetxController {
   static const _queueMaxLength = 5; // 이동 평균 계산용 큐 길이
 
   // 마우스 이동 관련 변수
-  DateTime? _lastUpdateTime;
   double _velocityX = 0;
   double _velocityY = 0;
   Offset? _lastPosition;
   final Queue<Offset> _movementQueue = Queue<Offset>();
   Timer? _mouseMoveTimer;
 
+  Timer? _inactivityTimer;
+  Timer? _keepAliveTimer;
+
   @override
   void onInit() {
     super.onInit();
+    // 화면 켜짐 유지 설정
+    Wakelock.enable();
+
+    // 비활성 타이머 시작
+    _startInactivityTimer();
+
+    // 연결 상태 변경 감지
     ever(isConnected, (bool connected) {
       if (connected) {
         print('Connected to server! Navigating to RemoteControlView');
         Get.toNamed('/remote_control');
+        _startKeepAliveTimer();
+      } else {
+        Get.offNamed('/qr_scan'); // 연결 해제시 QR 스캔 화면으로
+        _keepAliveTimer?.cancel();
       }
     });
-    ever(_wsService.isConnected, _handleConnectionChange);
+  }
+
+  void _startInactivityTimer() {
+    _inactivityTimer?.cancel();
+    _inactivityTimer = Timer(const Duration(minutes: 10), () {
+      disconnect();
+    });
+  }
+
+  void _resetInactivityTimer() {
+    _startInactivityTimer();
+  }
+
+  void _startKeepAliveTimer() {
+    _keepAliveTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (isConnected.value) {
+        _wsService.sendCommand({'type': 'keepalive'});
+      }
+    });
+  }
+
+  // 모든 사용자 입력에서 타이머 리셋
+  void _handleUserInput() {
+    _resetInactivityTimer();
   }
 
   void _handleConnectionChange(bool connected) {
@@ -108,7 +144,6 @@ class RemoteControlController extends GetxController {
     }
 
     final now = DateTime.now();
-    _lastUpdateTime = now;
 
     final dx = (position.dx - _lastPosition!.dx);
     final dy = (position.dy - _lastPosition!.dy);
@@ -130,7 +165,6 @@ class RemoteControlController extends GetxController {
 
   void _initializeMovement(Offset position) {
     _lastPosition = position;
-    _lastUpdateTime = DateTime.now();
     _velocityX = 0;
     _velocityY = 0;
     _movementQueue.clear();
@@ -168,7 +202,6 @@ class RemoteControlController extends GetxController {
 
   void _resetMovement() {
     _lastPosition = null;
-    _lastUpdateTime = null;
     _velocityX = 0;
     _velocityY = 0;
     _movementQueue.clear();
@@ -250,6 +283,9 @@ class RemoteControlController extends GetxController {
 
   @override
   void onClose() {
+    Wakelock.disable();
+    _inactivityTimer?.cancel();
+    _keepAliveTimer?.cancel();
     _mouseMoveTimer?.cancel();
     _resetMovement();
     disconnect();

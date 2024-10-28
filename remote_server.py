@@ -12,6 +12,7 @@ import psutil
 import platform
 import win32gui
 import win32process
+import time
 
 class RemoteControlServer:
     def __init__(self, websocket_port=8080, http_port=8081):
@@ -31,6 +32,9 @@ class RemoteControlServer:
         self.presentation_mode = False
         
         self._generate_qr_code()
+        self.is_client_connected = False  # 클라이언트 연결 상태
+        self.last_activity_time = None    # 마지막 활동 시간
+        self.inactivity_timeout = 600     # 10분 타임아웃 (초)
 
     def _generate_qr_code(self):
         """QR 코드 생성"""
@@ -90,7 +94,29 @@ class RemoteControlServer:
                     border: 1px solid #ddd;
                     border-radius: 5px;
                 }}
+                .connected-message {{
+                    display: none;
+                    color: green;
+                    font-size: 18px;
+                    margin: 20px 0;
+                }}
             </style>
+            <script>
+                let ws = null;
+                
+                function connectWebSocket() {{
+                    ws = new WebSocket('ws://' + window.location.hostname + ':{self.websocket_port}');
+                    ws.onmessage = function(event) {{
+                        const data = JSON.parse(event.data);
+                        if (data.type === 'client_connected') {{
+                            document.querySelector('.container').style.display = 'none';
+                            document.querySelector('.connected-message').style.display = 'block';
+                        }}
+                    }};
+                }}
+                
+                window.onload = connectWebSocket;
+            </script>
         </head>
         <body>
             <h1>Remote Control Server</h1>
@@ -100,6 +126,10 @@ class RemoteControlServer:
                 <p>WebSocket Port: {self.websocket_port}</p>
                 <h3>QR 코드로 연결하기</h3>
                 <img src="connection_qr.png" alt="Connection QR Code">
+            </div>
+            <div class="connected-message">
+                <h2>✅ 기기가 연결되었습니다</h2>
+                <p>리모컨 앱에서 제어가 가능합니다.</p>
             </div>
         </body>
         </html>
@@ -184,6 +214,12 @@ class RemoteControlServer:
 
     async def handle_websocket(self, websocket):
         """WebSocket 연결 처리"""
+        if self.is_client_connected:
+            await websocket.close(1008, "Another client is already connected")
+            return
+            
+        self.is_client_connected = True
+        self.last_activity_time = time.time()
         client_id = ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
         
         print("\n" + "="*50)
@@ -202,7 +238,20 @@ class RemoteControlServer:
                 'message': f'Connected successfully with ID: {client_id}'
             }))
             
-            async for message in websocket:
+            # 연결된 클라이언트들에게 알림
+            for client in self.connected_clients:
+                await client.send(json.dumps({
+                    'type': 'client_connected'
+                }))
+
+            while True:
+                # 비활성 시간 체크
+                if time.time() - self.last_activity_time > self.inactivity_timeout:
+                    print("Inactive timeout reached, disconnecting client")
+                    break
+
+                message = await websocket.recv()
+                self.last_activity_time = time.time()  # 활동 시간 갱신
                 try:
                     data = json.loads(message)
                     msg_type = data.get('type', 'unknown')
@@ -292,6 +341,7 @@ class RemoteControlServer:
         except Exception as e:
             print(f"\n[!] Error in websocket handler for client {client_id}: {e}")
         finally:
+            self.is_client_connected = False
             self.connected_clients.remove(websocket)
             print("\n" + "="*50)
             print(f"[-] Client {client_id} disconnected")
@@ -306,6 +356,10 @@ class RemoteControlServer:
         app.router.add_get('/', lambda r: web.FileResponse('connection.html'))
         app.router.add_get('/connection_qr.png', lambda r: web.FileResponse('connection_qr.png'))
 
+        # 브라우저 자동 실행
+        import webbrowser
+        webbrowser.open(f'http://localhost:{self.http_port}')
+        
         print("\n" + "="*50)
         print("=== Remote Control Server ===")
         print(f"[*] Starting server...")

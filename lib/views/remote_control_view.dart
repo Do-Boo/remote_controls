@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 import '../controllers/remote_control_controller.dart';
 
@@ -40,10 +41,10 @@ class RemoteControlView extends GetView<RemoteControlController> {
                   }
                 },
                 onTapUp: (details) {
+                  HapticFeedback.mediumImpact(); // 햅틱 피드백
                   if (controller.isLaserMode.value) {
                     controller.sendClick('left');
                   } else {
-                    // 화면 왼쪽/오른쪽 탭에 따라 이전/다음 슬라이드
                     if (details.localPosition.dx < screenSize.width / 2) {
                       controller.previousSlide();
                     } else {
@@ -53,44 +54,54 @@ class RemoteControlView extends GetView<RemoteControlController> {
                 },
                 child: Container(
                   color: Colors.transparent,
-                  child: Obx(() => controller.isLaserMode.value
-                      ? const Center(
-                          child: Text(
-                            '트랙패드 영역',
-                            style: TextStyle(
-                              color: Colors.white30,
-                              fontSize: 16,
-                            ),
-                          ),
-                        )
-                      : Row(
-                          children: [
-                            // 이전 슬라이드 영역
-                            const Expanded(
-                              child: Center(
-                                child: Icon(
-                                  Icons.arrow_back_ios,
+                  child: Material(
+                    // Material 위젯 추가
+                    color: Colors.transparent,
+                    child: InkWell(
+                      // InkWell로 탭 이펙트 추가
+                      onTap: () {}, // 필수 (이펙트만 위한 빈 콜백)
+                      splashColor: Colors.grey.withOpacity(0.3),
+                      highlightColor: Colors.grey.withOpacity(0.1),
+                      child: Obx(() => controller.isLaserMode.value
+                          ? const Center(
+                              child: Text(
+                                '트랙패드 영역',
+                                style: TextStyle(
                                   color: Colors.white30,
-                                  size: 40,
+                                  fontSize: 16,
                                 ),
                               ),
-                            ),
-                            Container(
-                              width: 1,
-                              color: Colors.white10,
-                            ),
-                            // 다음 슬라이드 영역
-                            const Expanded(
-                              child: Center(
-                                child: Icon(
-                                  Icons.arrow_forward_ios,
-                                  color: Colors.white30,
-                                  size: 40,
+                            )
+                          : Row(
+                              children: [
+                                // 이전 슬라이드 영역
+                                const Expanded(
+                                  child: Center(
+                                    child: Icon(
+                                      Icons.arrow_back_ios,
+                                      color: Colors.white30,
+                                      size: 40,
+                                    ),
+                                  ),
                                 ),
-                              ),
-                            ),
-                          ],
-                        )),
+                                Container(
+                                  width: 1,
+                                  color: Colors.white10,
+                                ),
+                                // 다음 슬라이드 영역
+                                const Expanded(
+                                  child: Center(
+                                    child: Icon(
+                                      Icons.arrow_forward_ios,
+                                      color: Colors.white30,
+                                      size: 40,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            )),
+                    ),
+                  ),
                 ),
               ),
             ),
