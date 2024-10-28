@@ -11,6 +11,7 @@ import socket
 import psutil
 import platform
 import win32gui
+import win32process
 
 class RemoteControlServer:
     def __init__(self, websocket_port=8080, http_port=8081):
@@ -140,28 +141,46 @@ class RemoteControlServer:
 
     async def handle_presentation_toggle(self, data):
         """프레젠테이션 모드 전환 처리"""
-        proc_info = self.get_active_window_process()
-        print(f"Current process: {proc_info}")
-        
-        if not proc_info:
-            return
+        import win32gui
+        import win32process
 
-        if self.os_type == 'Windows':
-            if 'powerpnt' in proc_info['name']:
-                # PowerPoint 상태에 따라 다른 키 전송
-                if proc_info.get('is_slideshow'):
-                    print("PowerPoint slideshow detected, sending ESC")
+        try:
+            # 현재 활성화된 윈도우 정보 가져오기
+            hwnd = win32gui.GetForegroundWindow()
+            window_title = win32gui.GetWindowText(hwnd).lower()
+            _, pid = win32process.GetWindowThreadProcessId(hwnd)
+            process_name = psutil.Process(pid).name().lower()
+            
+            print(f"Active Window: {window_title}")
+            print(f"Process: {process_name}")
+
+            # PowerPoint 처리
+            if 'powerpnt' in process_name:
+                if 'slide show' in window_title or '슬라이드 쇼' in window_title:
+                    print("PowerPoint: Slideshow mode -> ESC")
                     pyautogui.press('esc')
                 else:
-                    print("PowerPoint detected, sending F5")
+                    print("PowerPoint: Normal mode -> F5")
                     pyautogui.press('f5')
             
-            elif any(viewer in proc_info['name'] for viewer in ['acrord32', 'msedge', 'chrome']):
-                print("PDF viewer detected, sending Ctrl+L")
-                if data.get('key') == 'f5':
-                    pyautogui.hotkey('ctrl', 'l')
-                else:
+            # PDF 뷰어 처리 (Adobe Reader, Edge, Chrome)
+            elif any(name in process_name for name in ['acrord32', 'msedge', 'chrome']):
+                if 'full screen' in window_title or '전체 화면' in window_title:
+                    print("PDF: Fullscreen mode -> ESC")
                     pyautogui.press('esc')
+                else:
+                    print("PDF: Normal mode -> Ctrl+L")
+                    pyautogui.hotkey('ctrl', 'l')
+            
+            # 기타 프로그램
+            else:
+                print(f"Unknown program: {process_name}")
+                pyautogui.press(data.get('key', 'f5'))
+
+        except Exception as e:
+            print(f"Error in handle_presentation_toggle: {e}")
+            # 에러 발생 시 기본 동작
+            pyautogui.press(data.get('key', 'f5'))
 
     async def handle_websocket(self, websocket):
         """WebSocket 연결 처리"""
