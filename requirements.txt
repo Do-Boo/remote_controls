@@ -4,3 +4,5 @@ qrcode==7.4.2
 pillow==10.0.0
 websockets==11.0.3
 aiohttp==3.8.5
+
+pip install pywin32 psutil

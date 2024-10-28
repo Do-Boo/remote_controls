@@ -1,8 +1,9 @@
 import 'dart:async';
+import 'dart:math';
+import 'dart:collection';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import '../services/websocket_service.dart';
-import 'package:sensors_plus/sensors_plus.dart';
 import 'dart:convert';
 
 class RemoteControlController extends GetxController {
@@ -14,36 +15,31 @@ class RemoteControlController extends GetxController {
   final isLaserMode = false.obs;
   final mousePosition = Rx<Point>({'x': 0.0, 'y': 0.0});
 
-  // 자이로 센서 관련 변수
-  final gyroEnabled = false.obs;
-  final sensitivity = 1.0.obs; // 기본값을 더 낮게 설정
-  final isCalibrating = false.obs;
+  // 마우스 이동 관련 상수
+  static const double baseMultiplier = 10.0; // 기본 이동 배율
+  static const double smoothness = 0.3; // 부드러움 계수
+  static const double minMovementThreshold = 0.5; // 최소 이동 감지 거리
+  static const _updateInterval = Duration(milliseconds: 16); // 60 FPS
+  static const _queueMaxLength = 5; // 이동 평균 계산용 큐 길이
 
-  StreamSubscription? _gyroSubscription;
-  Vector3? _lastGyroEvent;
-  Vector3? _calibrationOffset;
-
-  // 상수
-  static const _gyroThreshold = 0.05;
-  static const _updateInterval = Duration(milliseconds: 16);
-
+  // 마우스 이동 관련 변수
+  DateTime? _lastUpdateTime;
+  double _velocityX = 0;
+  double _velocityY = 0;
+  Offset? _lastPosition;
+  final Queue<Offset> _movementQueue = Queue<Offset>();
   Timer? _mouseMoveTimer;
-
-  Offset? _lastPosition; // 마지막 터치 위치 저장용 변수 추가
 
   @override
   void onInit() {
     super.onInit();
-    // 연결 상태가 변경될 때마다 화면 전환
     ever(isConnected, (bool connected) {
       if (connected) {
         print('Connected to server! Navigating to RemoteControlView');
-        Get.toNamed('/remote_control'); // 수정된 부분
+        Get.toNamed('/remote_control');
       }
     });
     ever(_wsService.isConnected, _handleConnectionChange);
-    ever(gyroEnabled, _handleGyroModeChange);
-    _initGyroscope();
   }
 
   void _handleConnectionChange(bool connected) {
@@ -63,123 +59,22 @@ class RemoteControlController extends GetxController {
     }
   }
 
-  void _handleGyroModeChange(bool enabled) {
-    if (enabled) {
-      _calibrationOffset = null;
-      _startCalibration();
-      Get.snackbar(
-        '자이로 모드',
-        '기기를 평평하게 든 상태에서 잠시 기다려주세요.',
-        duration: const Duration(seconds: 3),
-        snackPosition: SnackPosition.BOTTOM,
-      );
-    } else {
-      _calibrationOffset = null;
-    }
-  }
-
-  void _startCalibration() {
-    isCalibrating.value = true;
-    Vector3 sum = const Vector3(0, 0, 0);
-    int samples = 0;
-
-    Timer(const Duration(seconds: 2), () {
-      if (samples > 0) {
-        _calibrationOffset = Vector3(
-          sum.x / samples,
-          sum.y / samples,
-          sum.z / samples,
-        );
-      }
-      isCalibrating.value = false;
-    });
-  }
-
-  void _initGyroscope() {
-    try {
-      _gyroSubscription = gyroscopeEvents.listen(
-        (GyroscopeEvent event) {
-          if (!gyroEnabled.value || !isConnected.value) return;
-          if (isCalibrating.value) return;
-
-          Vector3 currentEvent = Vector3(event.x, event.y, event.z);
-
-          if (_calibrationOffset != null) {
-            currentEvent = Vector3(
-              currentEvent.x - _calibrationOffset!.x,
-              currentEvent.y - _calibrationOffset!.y,
-              currentEvent.z - _calibrationOffset!.z,
-            );
-          }
-
-          if (_lastGyroEvent == null) {
-            _lastGyroEvent = currentEvent;
-            return;
-          }
-
-          if (currentEvent.x.abs() < _gyroThreshold && currentEvent.y.abs() < _gyroThreshold) return;
-
-          double currentX = mousePosition.value['x'] ?? 0.0;
-          double currentY = mousePosition.value['y'] ?? 0.0;
-
-          // 감도를 더 낮추고 Y축 반전
-          double deltaX = -currentEvent.y * (sensitivity.value * 0.3); // 감도 낮춤
-          double deltaY = -currentEvent.x * (sensitivity.value * 0.3); // Y축 반전
-
-          double newX = (currentX + deltaX).clamp(0.0, 1.0);
-          double newY = (currentY + deltaY).clamp(0.0, 1.0);
-
-          mousePosition.value = {'x': newX, 'y': newY};
-
-          _mouseMoveTimer?.cancel();
-          _mouseMoveTimer = Timer(_updateInterval, () {
-            _wsService.sendCommand({
-              'type': 'mouse_move',
-              'x': mousePosition.value['x'],
-              'y': mousePosition.value['y'],
-              'is_laser': isLaserMode.value,
-              'is_gyro': true,
-            });
-          });
-        },
-        onError: (error) {
-          print('Gyroscope error: $error');
-          gyroEnabled.value = false;
-          Get.snackbar(
-            '센서 오류',
-            '자이로 센서를 사용할 수 없습니다.',
-            snackPosition: SnackPosition.BOTTOM,
-          );
-        },
-      );
-    } catch (e) {
-      print('Gyroscope initialization error: $e');
-    }
-  }
-
   Future<void> connectWithCode(String input) async {
     try {
       print('Attempting to connect with input: $input');
-
       Map<String, dynamic> connectionData;
 
-      // JSON 형식인 경우 (QR 코드 스캔)
       if (input.startsWith('{')) {
         connectionData = json.decode(input);
-      }
-      // 6자리 코드인 경 (수동 입력)
-      else {
-        // 서버에서 받은 IP와 포트 사용
-        connectionData = {
-          'code': input,
-          'ip': '192.168.0.x', // 실제 서버 IP로 변경 필요
-          'port': 8080 // 실제 서버 포트로 변경 필요
-        };
+        connectionData['wsUrl'] = 'ws://${connectionData['ip']}:${connectionData['port']}';
+      } else {
+        connectionData = {'code': input, 'wsUrl': 'ws://192.168.0.x:8080'};
       }
 
       print('Connecting with data: $connectionData');
 
-      await _wsService.connectToServer(connectionData['ip'].toString(), connectionData['port'] as int, connectionData['code'].toString());
+      final Uri wsUri = Uri.parse(connectionData['wsUrl']);
+      await _wsService.connectToServer(wsUri.host, wsUri.port, connectionData['code'].toString());
 
       if (_wsService.isConnected.value) {
         isConnected.value = true;
@@ -208,46 +103,79 @@ class RemoteControlController extends GetxController {
     if (!isConnected.value) return;
 
     if (_lastPosition == null) {
-      _lastPosition = position;
+      _initializeMovement(position);
       return;
     }
 
-    // 이전 위치와의 차이를 계산
-    final deltaX = (position.dx - _lastPosition!.dx) / screenSize.width;
-    final deltaY = (position.dy - _lastPosition!.dy) / screenSize.height;
+    final now = DateTime.now();
+    _lastUpdateTime = now;
 
-    // 현재 마우스 위치에서 델타값을 더함
-    final newX = (mousePosition.value['x']! + (deltaX * 1.5)).clamp(0.0, 1.0); // 감도 조절을 위해 1.5 곱함
-    final newY = (mousePosition.value['y']! + (deltaY * 1.5)).clamp(0.0, 1.0);
+    final dx = (position.dx - _lastPosition!.dx);
+    final dy = (position.dy - _lastPosition!.dy);
 
-    // 위치 업데이트
-    mousePosition.value = {'x': newX, 'y': newY};
+    if (dx.abs() < minMovementThreshold && dy.abs() < minMovementThreshold) return;
+
+    _updateMovementQueue(Offset(dx, dy));
+    final avgMovement = _calculateAverageMovement();
+
+    final targetVelocityX = avgMovement.dx * baseMultiplier * 3;
+    final targetVelocityY = avgMovement.dy * baseMultiplier * 3;
+
+    _velocityX += (targetVelocityX - _velocityX) * smoothness;
+    _velocityY += (targetVelocityY - _velocityY) * smoothness;
+
+    _sendMouseMoveCommand(now);
     _lastPosition = position;
+  }
 
-    // 즉시 전송
-    _wsService.sendCommand({
-      'type': 'mouse_move',
-      'x': newX,
-      'y': newY,
-      'is_laser': isLaserMode.value,
-      'is_gyro': false,
-      'immediate': true,
+  void _initializeMovement(Offset position) {
+    _lastPosition = position;
+    _lastUpdateTime = DateTime.now();
+    _velocityX = 0;
+    _velocityY = 0;
+    _movementQueue.clear();
+  }
+
+  void _updateMovementQueue(Offset movement) {
+    _movementQueue.add(movement);
+    if (_movementQueue.length > _queueMaxLength) {
+      _movementQueue.removeFirst();
+    }
+  }
+
+  Offset _calculateAverageMovement() {
+    double avgDx = 0;
+    double avgDy = 0;
+    for (var offset in _movementQueue) {
+      avgDx += offset.dx;
+      avgDy += offset.dy;
+    }
+    return Offset(avgDx / _movementQueue.length, avgDy / _movementQueue.length);
+  }
+
+  void _sendMouseMoveCommand(DateTime timestamp) {
+    _mouseMoveTimer?.cancel();
+    _mouseMoveTimer = Timer(_updateInterval, () {
+      _wsService.sendCommand({
+        'type': 'mouse_move_relative',
+        'dx': _velocityX,
+        'dy': _velocityY,
+        'is_laser': isLaserMode.value,
+        'timestamp': timestamp.millisecondsSinceEpoch,
+      });
     });
   }
 
-  void startDrag() {
-    _lastPosition = null; // 드래그 시작시 마지막 위치 초기화
-    print('Started dragging');
-  }
-
-  void endDrag() {
-    _lastPosition = null; // 드래그 종료시 마지막 위치 초기화
-    print('Ended dragging');
+  void _resetMovement() {
+    _lastPosition = null;
+    _lastUpdateTime = null;
+    _velocityX = 0;
+    _velocityY = 0;
+    _movementQueue.clear();
   }
 
   void sendClick(String type) {
     if (!isConnected.value) return;
-
     _wsService.sendCommand({
       'type': 'mouse_click',
       'click_type': type,
@@ -266,19 +194,13 @@ class RemoteControlController extends GetxController {
   void nextSlide() {
     if (!isConnected.value) return;
     print('Sending next slide command');
-    _wsService.sendCommand({
-      'type': 'keyboard',
-      'key': 'right', // 'right_arrow' 대신 'right' 사용
-    });
+    sendKeyCommand('right');
   }
 
   void previousSlide() {
     if (!isConnected.value) return;
     print('Sending previous slide command');
-    _wsService.sendCommand({
-      'type': 'keyboard',
-      'key': 'left', // 'left_arrow' 대신 'left' 사용
-    });
+    sendKeyCommand('left');
   }
 
   void toggleBlackScreen() {
@@ -295,21 +217,11 @@ class RemoteControlController extends GetxController {
 
   void togglePresentationMode() {
     if (!isConnected.value) return;
-
     isPresentationMode.toggle();
-    if (isPresentationMode.value) {
-      // 프레젠테이션 시작 (F5)
-      _wsService.sendCommand({
-        'type': 'keyboard',
-        'key': 'f5',
-      });
-    } else {
-      // 프레젠테이션 종료 (ESC)
-      _wsService.sendCommand({
-        'type': 'keyboard',
-        'key': 'esc',
-      });
-    }
+    _wsService.sendCommand({
+      'type': 'keyboard',
+      'key': isPresentationMode.value ? 'f5' : 'esc',
+    });
   }
 
   void toggleLaserMode() {
@@ -318,7 +230,6 @@ class RemoteControlController extends GetxController {
 
   void adjustVolume(double delta) {
     if (!isConnected.value) return;
-
     _wsService.sendCommand({
       'type': 'volume',
       'delta': delta,
@@ -327,50 +238,22 @@ class RemoteControlController extends GetxController {
 
   void disconnect() {
     if (!isConnected.value) return;
-
     _wsService.sendCommand({
       'type': 'disconnect',
     });
-    _wsService.disconnect(); // WebSocket 연결 종료
+    _wsService.disconnect();
     isConnected.value = false;
     isPresentationMode.value = false;
     isLaserMode.value = false;
-    gyroEnabled.value = false;
-  }
-
-  void toggleGyroMode() {
-    gyroEnabled.toggle();
-    if (!gyroEnabled.value) {
-      Get.snackbar(
-        '자이로 모드',
-        '자이로 모드가 비활성화되었습니다.',
-        snackPosition: SnackPosition.BOTTOM,
-      );
-    }
-  }
-
-  void adjustSensitivity(double value) {
-    sensitivity.value = value.clamp(0.5, 5.0);
   }
 
   @override
   void onClose() {
     _mouseMoveTimer?.cancel();
-    _gyroSubscription?.cancel();
+    _resetMovement();
     disconnect();
     super.onClose();
   }
 }
 
 typedef Point = Map<String, double>;
-
-class Vector3 {
-  final double x;
-  final double y;
-  final double z;
-
-  const Vector3(this.x, this.y, this.z);
-
-  Vector3 operator +(Vector3 other) => Vector3(x + other.x, y + other.y, z + other.z);
-  Vector3 operator /(double scalar) => Vector3(x / scalar, y / scalar, z / scalar);
-}

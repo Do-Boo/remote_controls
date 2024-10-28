@@ -8,6 +8,9 @@ from aiohttp import web
 import os
 import qrcode
 import socket
+import win32gui  # 윈도우 핸들 관련 기능을 위해 추가
+import win32process
+import psutil
 
 class RemoteControlServer:
     def __init__(self, websocket_port=8080, http_port=8081):
@@ -19,12 +22,16 @@ class RemoteControlServer:
         # 마우스/키보드 설정
         pyautogui.FAILSAFE = False
         self.screen_width, self.screen_height = pyautogui.size()
-
-        self._generate_qr_code()  # QR 코드 생성 추가
         
+        # 마우스 이동 관련 설정
+        self.mouse_speed_multiplier = 2.0  # 기본 속도
+        
+        self.presentation_mode = False  # 프레젠테이션 모드 상태 추적
+        
+        self._generate_qr_code()
+
     def _generate_qr_code(self):
         """QR 코드 생성"""
-        # 로컬 IP 주소 얻기
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
             s.connect(('8.8.8.8', 80))
@@ -37,7 +44,7 @@ class RemoteControlServer:
         qr_data = {
             'code': self.connection_code,
             'port': self.websocket_port,
-            'ip': local_ip  # IP 주소 추가
+            'ip': local_ip
         }
         qr = qrcode.QRCode(version=1, box_size=10, border=5)
         qr.add_data(json.dumps(qr_data))
@@ -45,10 +52,10 @@ class RemoteControlServer:
         qr_image = qr.make_image(fill_color="black", back_color="white")
         qr_image.save('connection_qr.png')
         
-        print(f"[*] Server IP: {local_ip}")  # IP 주소 출력
-        
+        print(f"[*] Server IP: {local_ip}")
+
     def create_html(self):
-        """기본 HTML 페이지 생성"""
+        """HTML 페이지 생성"""
         html_content = f"""
         <!DOCTYPE html>
         <html>
@@ -98,11 +105,57 @@ class RemoteControlServer:
         with open('connection.html', 'w', encoding='utf-8') as f:
             f.write(html_content)
 
+    def get_active_window_process(self):
+        """현재 실행 중인 프로세스 확인"""
+        try:
+            for proc in psutil.process_iter(['name']):
+                if proc.info['name'].lower() in ['powerpnt.exe', 'acrord32.exe', 'msedge.exe', 'chrome.exe']:
+                    return {'name': proc.info['name'].lower()}
+            return None
+        except Exception as e:
+            print(f"Error getting processes: {e}")
+            return None
+
+    def is_presentation_active(self):
+        """프레젠테이션 모드 상태 확인"""
+        window_info = self.get_active_window_process()
+        if not window_info:
+            return False
+
+        # PowerPoint 슬라이드 쇼 확인
+        if 'powerpnt' in window_info['name'] and 'slide show' in window_info['title']:
+            return True
+        
+        # PDF 전체화면 확인 (Adobe Reader, Edge, Chrome 등)
+        pdf_viewers = ['acrord32.exe', 'msedge.exe', 'chrome.exe']
+        if any(viewer in window_info['name'] for viewer in pdf_viewers):
+            if 'full screen' in window_info['title'] or '전체 화면' in window_info['title']:
+                return True
+        
+        return False
+
+    async def handle_presentation_toggle(self, data):
+        """프레젠테이션 모드 전환 처리"""
+        proc_info = self.get_active_window_process()
+        if not proc_info:
+            return
+
+        if 'powerpnt.exe' in proc_info['name']:
+            if data.get('key') == 'f5':
+                pyautogui.press('f5')
+            else:
+                pyautogui.press('esc')
+        
+        elif proc_info['name'] in ['acrord32.exe', 'msedge.exe', 'chrome.exe']:
+            if data.get('key') == 'f5':
+                pyautogui.hotkey('ctrl', 'l')
+            else:
+                pyautogui.press('esc')
+
     async def handle_websocket(self, websocket):
         """WebSocket 연결 처리"""
         client_id = ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
         
-        # 연결 시작 시 상태 출력
         print("\n" + "="*50)
         print(f"[+] New client connected! (ID: {client_id})")
         print(f"[*] Client IP: {websocket.remote_address[0]}")
@@ -113,7 +166,6 @@ class RemoteControlServer:
         print("="*50 + "\n")
         
         try:
-            # 클라이언트에 연결 성공 메시지 전송
             await websocket.send(json.dumps({
                 'type': 'connection_status',
                 'status': 'connected',
@@ -128,13 +180,36 @@ class RemoteControlServer:
                     print(f"\n[>] Received message from client {client_id}:")
                     print(f"    Type: {msg_type}")
                     
-                    if msg_type == 'mouse_move':
+                    if msg_type == 'mouse_move_relative':
+                        # 상대적 마우스 이동 처리
+                        current_x, current_y = pyautogui.position()
+                        dx = float(data.get('dx', 0))
+                        dy = float(data.get('dy', 0))
+                        
+                        # 이동 거리에 속도 승수 적용
+                        dx *= self.mouse_speed_multiplier
+                        dy *= self.mouse_speed_multiplier
+                        
+                        # 새 위치 계산
+                        new_x = int(current_x + dx)
+                        new_y = int(current_y + dy)
+                        
+                        # 화면 경계 확인
+                        new_x = max(0, min(new_x, self.screen_width - 1))
+                        new_y = max(0, min(new_y, self.screen_height - 1))
+                        
+                        print(f"    Relative Move: dx={dx}, dy={dy}")
+                        print(f"    New Position: ({new_x}, {new_y})")
+                        
+                        pyautogui.moveTo(new_x, new_y, duration=0)
+                        
+                    elif msg_type == 'mouse_move':
+                        # 절대 좌표 이동
                         x = int(float(data['x']) * self.screen_width)
                         y = int(float(data['y']) * self.screen_height)
                         print(f"    Position: ({x}, {y})")
                         
-                        # 즉시 마우스 이동
-                        pyautogui.moveTo(x, y, duration=0)  # duration=0으로 설정하여 즉시 이동
+                        pyautogui.moveTo(x, y, duration=0)
                         
                         if data.get('is_laser'):
                             print("    Laser mode: On")
@@ -151,24 +226,23 @@ class RemoteControlServer:
                         else:
                             pyautogui.click()
                     
+                    elif msg_type == 'mouse_drag':
+                        action = data.get('action', '')
+                        print(f"    Drag action: {action}")
+                        if action == 'start':
+                            pyautogui.mouseDown()
+                        elif action == 'end':
+                            pyautogui.mouseUp()
+                    
                     elif msg_type == 'keyboard':
                         key = data.get('key', '')
                         print(f"    Key: {key}")
                         try:
-                            # 키 입력 전에 짧은 대기
                             await asyncio.sleep(0.1)
-                            
-                            if key == 'right':
-                                pyautogui.press('right')
-                            elif key == 'left':
-                                pyautogui.press('left')
-                            elif key == 'b':
-                                pyautogui.press('b')
-                            elif key == 'w':
-                                pyautogui.press('w')
+                            if key in ['f5', 'esc']:
+                                await self.handle_presentation_toggle(data)
                             else:
                                 pyautogui.press(key)
-                                
                             print(f"    Pressed key: {key}")
                         except Exception as e:
                             print(f"    Error pressing key: {e}")
@@ -206,12 +280,7 @@ class RemoteControlServer:
         print("=== Remote Control Server ===")
         print(f"[*] Starting server...")
         
-        # localhost를 0.0.0.0으로 변경하여 외부 접속 허용
-        async with websockets.serve(
-            self.handle_websocket, 
-            '0.0.0.0',  # 모든 IP에서 접속 허용
-            self.websocket_port
-        ):
+        async with websockets.serve(self.handle_websocket, '0.0.0.0', self.websocket_port):
             runner = web.AppRunner(app)
             await runner.setup()
             site = web.TCPSite(runner, '0.0.0.0', self.http_port)

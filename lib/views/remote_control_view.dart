@@ -135,14 +135,14 @@ class RemoteControlView extends GetView<RemoteControlController> {
                   onPressed: controller.togglePresentationMode,
                   tooltip: '프레젠테이션 모드',
                 )),
-            Obx(() => IconButton(
-                  icon: Icon(
-                    Icons.highlight,
-                    color: controller.isLaserMode.value ? Colors.red : Colors.white,
-                  ),
-                  onPressed: controller.toggleLaserMode,
-                  tooltip: '레이저 포인터',
-                )),
+            // Obx(() => IconButton(
+            //       icon: Icon(
+            //         Icons.highlight,
+            //         color: controller.isLaserMode.value ? Colors.red : Colors.white,
+            //       ),
+            //       onPressed: controller.toggleLaserMode,
+            //       tooltip: '레이저 포인터',
+            //     )),
             IconButton(
               icon: const Icon(Icons.brightness_1, color: Colors.white),
               onPressed: controller.toggleBlackScreen,
