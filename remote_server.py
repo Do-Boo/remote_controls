@@ -20,6 +20,7 @@ class RemoteControlServer:
         self.http_port = http_port
         self.connection_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
         self.connected_clients = set()
+        self.web_clients = set()  # 웹 클라이언트 추적을 위한 새로운 set
         
         # 마우스/키보드 설정
         pyautogui.FAILSAFE = False
@@ -110,6 +111,10 @@ class RemoteControlServer:
                     
                     ws.onopen = function() {{
                         console.log('WebSocket 연결됨');
+                        // 웹 클라이언트임을 서버에 알림
+                        ws.send(JSON.stringify({{
+                            'client_type': 'web'
+                        }}));
                     }};
                     
                     ws.onclose = function() {{
@@ -241,35 +246,46 @@ class RemoteControlServer:
 
     async def handle_websocket(self, websocket):
         """WebSocket 연결 처리"""
-        if self.is_client_connected:
-            await websocket.close(1008, "Another client is already connected")
-            return
-            
-        self.is_client_connected = True
-        self.last_activity_time = time.time()
-        client_id = ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
-        
-        print("\n" + "="*50)
-        print(f"[+] New client connected! (ID: {client_id})")
-        print(f"[*] Client IP: {websocket.remote_address[0]}")
-        print(f"[*] Connection Code: {self.connection_code}")
-        
-        self.connected_clients.add(websocket)
-        print(f"[*] Total connected clients: {len(self.connected_clients)}")
-        print("="*50 + "\n")
-        
         try:
-            await websocket.send(json.dumps({
-                'type': 'connection_status',
-                'status': 'connected',
-                'message': f'Connected successfully with ID: {client_id}'
-            }))
+            # 웹소켓 연결 초기 메시지 수신
+            initial_message = await websocket.recv()
+            data = json.loads(initial_message)
+            client_type = data.get('client_type', 'unknown')
+
+            if client_type == 'web':
+                # 웹 클라이언트 처리
+                self.web_clients.add(websocket)
+                try:
+                    while True:
+                        await websocket.recv()  # 웹 클라이언트의 메시지 대기
+                except:
+                    self.web_clients.remove(websocket)
+                return
+
+            # 제어 클라이언트 처리
+            if self.is_client_connected:
+                await websocket.close(1008, "Another client is already connected")
+                return
+                
+            self.is_client_connected = True
+            self.last_activity_time = time.time()
+            client_id = ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
             
-            # 연결된 클라이언트들에게 알림
-            for client in self.connected_clients:
-                await client.send(json.dumps({
-                    'type': 'client_connected'
-                }))
+            print("\n" + "="*50)
+            print(f"[+] New control client connected! (ID: {client_id})")
+            print(f"[*] Client IP: {websocket.remote_address[0]}")
+            print(f"[*] Connection Code: {self.connection_code}")
+            
+            self.connected_clients.add(websocket)
+            
+            # 웹 클라이언트들에게 연결 상태 알림
+            for web_client in self.web_clients:
+                try:
+                    await web_client.send(json.dumps({
+                        'type': 'client_connected'
+                    }))
+                except:
+                    pass
 
             while True:
                 # 비활성 시간 체크
@@ -365,19 +381,18 @@ class RemoteControlServer:
                 except Exception as e:
                     print(f"[!] Error processing message from client {client_id}: {e}")
 
-        except Exception as e:
-            print(f"\n[!] Error in websocket handler for client {client_id}: {e}")
         finally:
-            self.is_client_connected = False
-            self.connected_clients.remove(websocket)
-            # 다른 클라이언트들에게 연결 해제 알림
-            for client in self.connected_clients:
-                try:
-                    await client.send(json.dumps({
-                        'type': 'client_disconnected'
-                    }))
-                except:
-                    pass
+            if websocket in self.connected_clients:
+                self.is_client_connected = False
+                self.connected_clients.remove(websocket)
+                # 웹 클라이언트들에게 연결 해제 알림
+                for web_client in self.web_clients:
+                    try:
+                        await web_client.send(json.dumps({
+                            'type': 'client_disconnected'
+                        }))
+                    except:
+                        pass
             print("\n" + "="*50)
             print(f"[-] Client {client_id} disconnected")
             print(f"[*] Remaining connected clients: {len(self.connected_clients)}")
