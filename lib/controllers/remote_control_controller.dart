@@ -115,11 +115,7 @@ class RemoteControlController extends GetxController {
       if (_wsService.isConnected.value) {
         isConnected.value = true;
         print('Successfully connected to server');
-        Get.snackbar(
-          '연결 성공',
-          '서버에 연결되었습니다.',
-          snackPosition: SnackPosition.BOTTOM,
-        );
+        Get.offNamed('/remote_control');
       } else {
         throw Exception('WebSocket connection failed');
       }

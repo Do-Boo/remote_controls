@@ -75,12 +75,23 @@ class RemoteControlView extends GetView<RemoteControlController> {
                           : Row(
                               children: [
                                 // 이전 슬라이드 영역
-                                const Expanded(
-                                  child: Center(
-                                    child: Icon(
-                                      Icons.arrow_back_ios,
-                                      color: Colors.white30,
-                                      size: 40,
+                                Expanded(
+                                  child: Material(
+                                    color: Colors.transparent,
+                                    child: InkWell(
+                                      onTap: () {
+                                        HapticFeedback.mediumImpact();
+                                        controller.previousSlide();
+                                      },
+                                      splashColor: Colors.grey.withOpacity(0.3),
+                                      highlightColor: Colors.grey.withOpacity(0.1),
+                                      child: const Center(
+                                        child: Icon(
+                                          Icons.arrow_back_ios,
+                                          color: Colors.white30,
+                                          size: 40,
+                                        ),
+                                      ),
                                     ),
                                   ),
                                 ),
@@ -89,12 +100,23 @@ class RemoteControlView extends GetView<RemoteControlController> {
                                   color: Colors.white10,
                                 ),
                                 // 다음 슬라이드 영역
-                                const Expanded(
-                                  child: Center(
-                                    child: Icon(
-                                      Icons.arrow_forward_ios,
-                                      color: Colors.white30,
-                                      size: 40,
+                                Expanded(
+                                  child: Material(
+                                    color: Colors.transparent,
+                                    child: InkWell(
+                                      onTap: () {
+                                        HapticFeedback.mediumImpact();
+                                        controller.nextSlide();
+                                      },
+                                      splashColor: Colors.grey.withOpacity(0.3),
+                                      highlightColor: Colors.grey.withOpacity(0.1),
+                                      child: const Center(
+                                        child: Icon(
+                                          Icons.arrow_forward_ios,
+                                          color: Colors.white30,
+                                          size: 40,
+                                        ),
+                                      ),
                                     ),
                                   ),
                                 ),

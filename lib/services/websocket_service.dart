@@ -13,17 +13,25 @@ class WebSocketService extends GetxService {
 
       _channel = WebSocketChannel.connect(Uri.parse(wsUrl));
 
-      // 연결 후 인증 메시지 전송
-      _channel!.sink.add(json.encode({'type': 'auth', 'code': code}));
+      // 초기 연결 메시지에 client_type 추가
+      _channel!.sink.add(json.encode({
+        'type': 'auth',
+        'code': code,
+        'client_type': 'control' // 제어 클라이언트임을 명시
+      }));
 
       // 연결 상태 모니터링
       _channel!.stream.listen(
         (message) {
           print('Received from server: $message');
-          final data = json.decode(message);
-          if (data['type'] == 'connection_status') {
-            isConnected.value = data['status'] == 'connected';
-            print('Connection status: ${isConnected.value}');
+          try {
+            final data = json.decode(message);
+            if (data['type'] == 'auth_response') {
+              isConnected.value = data['status'] == 'success';
+              print('Authentication status: ${isConnected.value}');
+            }
+          } catch (e) {
+            print('Error parsing message: $e');
           }
         },
         onError: (error) {
@@ -37,9 +45,17 @@ class WebSocketService extends GetxService {
           _channel = null;
         },
       );
+
+      // 연결 타임아웃 설정
+      await Future.delayed(const Duration(seconds: 5));
+      if (!isConnected.value) {
+        throw Exception('Connection timeout');
+      }
     } catch (e) {
       print('Connection error: $e');
       isConnected.value = false;
+      _channel?.sink.close();
+      _channel = null;
       rethrow;
     }
   }

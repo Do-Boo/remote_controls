@@ -249,24 +249,50 @@ class RemoteControlServer:
         try:
             # 웹소켓 연결 초기 메시지 수신
             initial_message = await websocket.recv()
+            print(f"Initial message received: {initial_message}")
             data = json.loads(initial_message)
+            
             client_type = data.get('client_type', 'unknown')
+            auth_code = data.get('code', '')
+
+            # 인증 코드 확인
+            if auth_code != self.connection_code:
+                await websocket.send(json.dumps({
+                    'type': 'auth_response',
+                    'status': 'failed',
+                    'message': 'Invalid connection code'
+                }))
+                return
 
             if client_type == 'web':
                 # 웹 클라이언트 처리
                 self.web_clients.add(websocket)
+                await websocket.send(json.dumps({
+                    'type': 'auth_response',
+                    'status': 'success'
+                }))
                 try:
                     while True:
-                        await websocket.recv()  # 웹 클라이언트의 메시지 대기
+                        await websocket.recv()
                 except:
                     self.web_clients.remove(websocket)
                 return
 
             # 제어 클라이언트 처리
             if self.is_client_connected:
-                await websocket.close(1008, "Another client is already connected")
+                await websocket.send(json.dumps({
+                    'type': 'auth_response',
+                    'status': 'failed',
+                    'message': 'Another client is already connected'
+                }))
                 return
-                
+
+            # 연결 성공 응답
+            await websocket.send(json.dumps({
+                'type': 'auth_response',
+                'status': 'success'
+            }))
+            
             self.is_client_connected = True
             self.last_activity_time = time.time()
             client_id = ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))

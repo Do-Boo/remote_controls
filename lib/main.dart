@@ -11,10 +11,8 @@ void main() async {
     WidgetsFlutterBinding.ensureInitialized();
 
     // GetX 서비스 초기화
-    final binding = RemoteControlBinding();
-    Get.put(WebSocketService());
+    await Get.putAsync(() async => WebSocketService());
 
-    binding.dependencies();
     runApp(const MyApp());
   } catch (e) {
     print('Initialization error: $e');
@@ -34,8 +32,13 @@ class MyApp extends StatelessWidget {
         brightness: Brightness.dark,
       ),
       initialBinding: RemoteControlBinding(),
-      home: const QRScanView(),
+      initialRoute: '/qr_scan', // 초기 라우트 추가
       getPages: [
+        GetPage(
+          name: '/qr_scan',
+          page: () => const QRScanView(),
+          binding: RemoteControlBinding(),
+        ),
         GetPage(
           name: '/remote_control',
           page: () => const RemoteControlView(),
