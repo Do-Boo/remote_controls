@@ -103,15 +103,42 @@ class RemoteControlServer:
             </style>
             <script>
                 let ws = null;
+                let isConnected = false;
                 
                 function connectWebSocket() {{
                     ws = new WebSocket('ws://' + window.location.hostname + ':{self.websocket_port}');
+                    
+                    ws.onopen = function() {{
+                        console.log('WebSocket 연결됨');
+                    }};
+                    
+                    ws.onclose = function() {{
+                        console.log('WebSocket 연결 끊김');
+                        if (isConnected) {{
+                            document.querySelector('.container').style.display = 'block';
+                            document.querySelector('.connected-message').style.display = 'none';
+                            isConnected = false;
+                        }}
+                        // 연결이 끊어지면 재연결 시도
+                        setTimeout(connectWebSocket, 3000);
+                    }};
+                    
                     ws.onmessage = function(event) {{
                         const data = JSON.parse(event.data);
-                        if (data.type === 'client_connected') {{
+                        if (data.type === 'client_connected' && !isConnected) {{
                             document.querySelector('.container').style.display = 'none';
                             document.querySelector('.connected-message').style.display = 'block';
+                            isConnected = true;
                         }}
+                        if (data.type === 'client_disconnected') {{
+                            document.querySelector('.container').style.display = 'block';
+                            document.querySelector('.connected-message').style.display = 'none';
+                            isConnected = false;
+                        }}
+                    }};
+                    
+                    ws.onerror = function(error) {{
+                        console.error('WebSocket 에러:', error);
                     }};
                 }}
                 
@@ -343,6 +370,14 @@ class RemoteControlServer:
         finally:
             self.is_client_connected = False
             self.connected_clients.remove(websocket)
+            # 다른 클라이언트들에게 연결 해제 알림
+            for client in self.connected_clients:
+                try:
+                    await client.send(json.dumps({
+                        'type': 'client_disconnected'
+                    }))
+                except:
+                    pass
             print("\n" + "="*50)
             print(f"[-] Client {client_id} disconnected")
             print(f"[*] Remaining connected clients: {len(self.connected_clients)}")

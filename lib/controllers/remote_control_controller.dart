@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:collection';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
-import 'package:wakelock/wakelock.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 import '../services/websocket_service.dart';
 import 'dart:convert';
 
@@ -35,8 +35,8 @@ class RemoteControlController extends GetxController {
   @override
   void onInit() {
     super.onInit();
-    // 화면 켜짐 유지 설정
-    Wakelock.enable();
+    // 화면이 꺼지지 않도록 설정
+    WakelockPlus.enable();
 
     // 비활성 타이머 시작
     _startInactivityTimer();
@@ -283,7 +283,8 @@ class RemoteControlController extends GetxController {
 
   @override
   void onClose() {
-    Wakelock.disable();
+    // 화면 켜짐 유지 해제
+    WakelockPlus.disable();
     _inactivityTimer?.cancel();
     _keepAliveTimer?.cancel();
     _mouseMoveTimer?.cancel();
