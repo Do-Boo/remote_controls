@@ -10,6 +10,7 @@ import qrcode
 import socket
 import psutil
 import platform
+import win32gui
 
 class RemoteControlServer:
     def __init__(self, websocket_port=8080, http_port=8081):
@@ -106,19 +107,32 @@ class RemoteControlServer:
             f.write(html_content)
 
     def get_active_window_process(self):
-        """현재 실행 중인 프로세스 확인"""
+        """현재 실행 중인 프로세스와 윈도우 상태 확인"""
         try:
             presentation_processes = {
                 'Windows': ['powerpnt.exe', 'acrord32.exe', 'msedge.exe', 'chrome.exe'],
-                'Darwin': ['keynote', 'preview', 'chrome', 'safari'],  # macOS
+                'Darwin': ['keynote', 'preview', 'chrome', 'safari'],
                 'Linux': ['libreoffice', 'evince', 'chrome', 'firefox']
             }
             
             target_processes = presentation_processes.get(self.os_type, [])
             
-            for proc in psutil.process_iter(['name']):
-                if any(p in proc.info['name'].lower() for p in target_processes):
-                    return {'name': proc.info['name'].lower()}
+            for proc in psutil.process_iter(['name', 'pid']):
+                proc_name = proc.info['name'].lower()
+                if any(p in proc_name for p in target_processes):
+                    # PowerPoint 슬라이드 쇼 상태 확인
+                    if 'powerpnt' in proc_name:
+                        try:
+                            import win32gui
+                            window_title = win32gui.GetWindowText(win32gui.GetForegroundWindow()).lower()
+                            is_slideshow = 'slide show' in window_title or '슬라이드 쇼' in window_title
+                            return {
+                                'name': proc_name,
+                                'is_slideshow': is_slideshow
+                            }
+                        except:
+                            return {'name': proc_name, 'is_slideshow': False}
+                    return {'name': proc_name}
             return None
         except Exception as e:
             print(f"Error getting processes: {e}")
@@ -127,38 +141,27 @@ class RemoteControlServer:
     async def handle_presentation_toggle(self, data):
         """프레젠테이션 모드 전환 처리"""
         proc_info = self.get_active_window_process()
-        print(f"Current process: {proc_info}")  # 디버깅용 로그 추가
+        print(f"Current process: {proc_info}")
         
-        key = data.get('key')
-        print(f"Received key: {key}")  # 디버깅용 로그 추가
-
         if not proc_info:
-            # 프레젠테이션 프로그램이 실행중이지 않을 때는 기본 키 전송
-            pyautogui.press(key)
             return
 
         if self.os_type == 'Windows':
             if 'powerpnt' in proc_info['name']:
-                print("PowerPoint detected, sending F5/ESC")
-                pyautogui.press(key)
+                # PowerPoint 상태에 따라 다른 키 전송
+                if proc_info.get('is_slideshow'):
+                    print("PowerPoint slideshow detected, sending ESC")
+                    pyautogui.press('esc')
+                else:
+                    print("PowerPoint detected, sending F5")
+                    pyautogui.press('f5')
+            
             elif any(viewer in proc_info['name'] for viewer in ['acrord32', 'msedge', 'chrome']):
-                print("PDF viewer detected, sending Ctrl+L/ESC")
-                if key == 'f5':
+                print("PDF viewer detected, sending Ctrl+L")
+                if data.get('key') == 'f5':
                     pyautogui.hotkey('ctrl', 'l')
                 else:
                     pyautogui.press('esc')
-        
-        elif self.os_type == 'Darwin':  # macOS
-            if 'keynote' in proc_info['name']:
-                pyautogui.hotkey('command', 'shift', 'p' if data.get('key') == 'f5' else 'esc')
-            else:
-                pyautogui.hotkey('command', 'shift', 'f' if data.get('key') == 'f5' else 'esc')
-        
-        else:  # Linux
-            if 'libreoffice' in proc_info['name']:
-                pyautogui.press('f5' if data.get('key') == 'f5' else 'esc')
-            else:
-                pyautogui.hotkey('ctrl', 'l' if data.get('key') == 'f5' else 'esc')
 
     async def handle_websocket(self, websocket):
         """WebSocket 연결 처리"""
