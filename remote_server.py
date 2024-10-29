@@ -13,6 +13,86 @@ import platform
 import win32gui
 import win32process
 import time
+import sys
+import ctypes
+import subprocess
+
+def is_admin():
+    """관리자 권한 확인"""
+    try:
+        return ctypes.windll.shell32.IsUserAnAdmin()
+    except:
+        return False
+
+def run_as_admin():
+    """관리자 권한으로 재실행"""
+    if is_admin():
+        return True
+    else:
+        try:
+            script = os.path.abspath(sys.argv[0])
+            params = ' '.join([script] + sys.argv[1:])
+            
+            if sys.executable.endswith('pythonw.exe'):
+                # GUI 모드
+                ctypes.windll.shell32.ShellExecuteW(
+                    None, 
+                    "runas", 
+                    sys.executable, 
+                    params, 
+                    None, 
+                    1
+                )
+            else:
+                # 콘솔 모드
+                ctypes.windll.shell32.ShellExecuteW(
+                    None,
+                    "runas",
+                    sys.executable,
+                    params,
+                    None,
+                    1
+                )
+            return True
+        except Exception as e:
+            print(f"관리자 권한 실행 실패: {e}")
+            return False
+
+def setup_firewall():
+    """방화벽 규칙 설정"""
+    if not is_admin():
+        print("[!] 방화벽 설정을 위해 관리자 권한이 필요합니다.")
+        return False
+
+    try:
+        # TCP 규칙 추가
+        powershell_command = """
+        $ports = @(8080, 8081)
+        $ruleName = "Remote Control Server"
+
+        foreach ($port in $ports) {
+            # 기존 규칙 제거
+            Remove-NetFirewallRule -DisplayName "$ruleName (TCP $port)" -ErrorAction SilentlyContinue
+            
+            # 새 규칙 추가
+            New-NetFirewallRule -DisplayName "$ruleName (TCP $port)" `
+                -Direction Inbound `
+                -LocalPort $port `
+                -Protocol TCP `
+                -Action Allow
+        }
+        """
+        
+        subprocess.run(["powershell", "-Command", powershell_command], check=True)
+        print("[+] 방화벽 규칙이 성공적으로 추가되었습니다.")
+        return True
+        
+    except subprocess.CalledProcessError as e:
+        print(f"[!] 방화벽 규칙 추가 중 오류 발생: {e}")
+        return False
+    except Exception as e:
+        print(f"[!] 예상치 못한 오류 발생: {e}")
+        return False
 
 class RemoteControlServer:
     def __init__(self, websocket_port=8080, http_port=8081):
@@ -20,22 +100,22 @@ class RemoteControlServer:
         self.http_port = http_port
         self.connection_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
         self.connected_clients = set()
-        self.web_clients = set()  # 웹 클라이언트 추적을 위한 새로운 set
+        self.web_clients = set()
         
         # 마우스/키보드 설정
         pyautogui.FAILSAFE = False
         self.screen_width, self.screen_height = pyautogui.size()
         
         # 마우스 이동 관련 설정
-        self.mouse_speed_multiplier = 2.0  # 기본 속도
+        self.mouse_speed_multiplier = 2.0
         
-        self.os_type = platform.system()  # 'Windows', 'Darwin' (macOS), 'Linux'
+        self.os_type = platform.system()
         self.presentation_mode = False
         
         self._generate_qr_code()
-        self.is_client_connected = False  # 클라이언트 연결 상태
-        self.last_activity_time = None    # 마지막 활동 시간
-        self.inactivity_timeout = 600     # 10분 타임아웃 (초)
+        self.is_client_connected = False
+        self.last_activity_time = None
+        self.inactivity_timeout = 600
 
     def _generate_qr_code(self):
         """QR 코드 생성"""
@@ -111,7 +191,6 @@ class RemoteControlServer:
                     
                     ws.onopen = function() {{
                         console.log('WebSocket 연결됨');
-                        // 웹 클라이언트임을 서버에 알림
                         ws.send(JSON.stringify({{
                             'client_type': 'web'
                         }}));
@@ -124,7 +203,6 @@ class RemoteControlServer:
                             document.querySelector('.connected-message').style.display = 'none';
                             isConnected = false;
                         }}
-                        // 연결이 끊어지면 재연결 시도
                         setTimeout(connectWebSocket, 3000);
                     }};
                     
@@ -183,10 +261,8 @@ class RemoteControlServer:
             for proc in psutil.process_iter(['name', 'pid']):
                 proc_name = proc.info['name'].lower()
                 if any(p in proc_name for p in target_processes):
-                    # PowerPoint 슬라이드 쇼 상태 확인
                     if 'powerpnt' in proc_name:
                         try:
-                            import win32gui
                             window_title = win32gui.GetWindowText(win32gui.GetForegroundWindow()).lower()
                             is_slideshow = 'slide show' in window_title or '슬라이드 쇼' in window_title
                             return {
@@ -203,11 +279,7 @@ class RemoteControlServer:
 
     async def handle_presentation_toggle(self, data):
         """프레젠테이션 모드 전환 처리"""
-        import win32gui
-        import win32process
-
         try:
-            # 현재 활성화된 윈도우 정보 가져오기
             hwnd = win32gui.GetForegroundWindow()
             window_title = win32gui.GetWindowText(hwnd).lower()
             _, pid = win32process.GetWindowThreadProcessId(hwnd)
@@ -216,7 +288,6 @@ class RemoteControlServer:
             print(f"Active Window: {window_title}")
             print(f"Process: {process_name}")
 
-            # PowerPoint 처리
             if 'powerpnt' in process_name:
                 if 'slide show' in window_title or '슬라이드 쇼' in window_title:
                     print("PowerPoint: Slideshow mode -> ESC")
@@ -225,7 +296,6 @@ class RemoteControlServer:
                     print("PowerPoint: Normal mode -> F5")
                     pyautogui.press('f5')
             
-            # PDF 뷰어 처리 (Adobe Reader, Edge, Chrome)
             elif any(name in process_name for name in ['acrord32', 'msedge', 'chrome']):
                 if 'full screen' in window_title or '전체 화면' in window_title:
                     print("PDF: Fullscreen mode -> ESC")
@@ -234,20 +304,17 @@ class RemoteControlServer:
                     print("PDF: Normal mode -> Ctrl+L")
                     pyautogui.hotkey('ctrl', 'l')
             
-            # 기타 프로그램
             else:
                 print(f"Unknown program: {process_name}")
                 pyautogui.press(data.get('key', 'f5'))
 
         except Exception as e:
             print(f"Error in handle_presentation_toggle: {e}")
-            # 에러 발생 시 기본 동작
             pyautogui.press(data.get('key', 'f5'))
 
     async def handle_websocket(self, websocket):
         """WebSocket 연결 처리"""
         try:
-            # 웹소켓 연결 초기 메시지 수신
             initial_message = await websocket.recv()
             print(f"Initial message received: {initial_message}")
             data = json.loads(initial_message)
@@ -255,7 +322,6 @@ class RemoteControlServer:
             client_type = data.get('client_type', 'unknown')
             auth_code = data.get('code', '')
 
-            # 인증 코드 확인
             if auth_code != self.connection_code:
                 await websocket.send(json.dumps({
                     'type': 'auth_response',
@@ -265,7 +331,6 @@ class RemoteControlServer:
                 return
 
             if client_type == 'web':
-                # 웹 클라이언트 처리
                 self.web_clients.add(websocket)
                 await websocket.send(json.dumps({
                     'type': 'auth_response',
@@ -278,7 +343,6 @@ class RemoteControlServer:
                     self.web_clients.remove(websocket)
                 return
 
-            # 제어 클라이언트 처리
             if self.is_client_connected:
                 await websocket.send(json.dumps({
                     'type': 'auth_response',
@@ -287,7 +351,6 @@ class RemoteControlServer:
                 }))
                 return
 
-            # 연결 성공 응답
             await websocket.send(json.dumps({
                 'type': 'auth_response',
                 'status': 'success'
@@ -304,7 +367,6 @@ class RemoteControlServer:
             
             self.connected_clients.add(websocket)
             
-            # 웹 클라이언트들에게 연결 상태 알림
             for web_client in self.web_clients:
                 try:
                     await web_client.send(json.dumps({
@@ -314,13 +376,12 @@ class RemoteControlServer:
                     pass
 
             while True:
-                # 비활성 시간 체크
                 if time.time() - self.last_activity_time > self.inactivity_timeout:
                     print("Inactive timeout reached, disconnecting client")
                     break
 
                 message = await websocket.recv()
-                self.last_activity_time = time.time()  # 활동 시간 갱신
+                self.last_activity_time = time.time()
                 try:
                     data = json.loads(message)
                     msg_type = data.get('type', 'unknown')
@@ -329,20 +390,16 @@ class RemoteControlServer:
                     print(f"    Type: {msg_type}")
                     
                     if msg_type == 'mouse_move_relative':
-                        # 상대적 마우스 이동 처리
                         current_x, current_y = pyautogui.position()
                         dx = float(data.get('dx', 0))
                         dy = float(data.get('dy', 0))
                         
-                        # 이동 거리에 속도 승수 적용
                         dx *= self.mouse_speed_multiplier
                         dy *= self.mouse_speed_multiplier
                         
-                        # 새 위치 계산
                         new_x = int(current_x + dx)
                         new_y = int(current_y + dy)
                         
-                        # 화면 경계 확인
                         new_x = max(0, min(new_x, self.screen_width - 1))
                         new_y = max(0, min(new_y, self.screen_height - 1))
                         
@@ -352,7 +409,6 @@ class RemoteControlServer:
                         pyautogui.moveTo(new_x, new_y, duration=0)
                         
                     elif msg_type == 'mouse_move':
-                        # 절대 좌표 이동
                         x = int(float(data['x']) * self.screen_width)
                         y = int(float(data['y']) * self.screen_height)
                         print(f"    Position: ({x}, {y})")
@@ -399,7 +455,6 @@ class RemoteControlServer:
                         print(f"    Client requested disconnect")
                         break
                     
-                    # 메시지 처리 성공 로그
                     print(f"    Status: Success")
                     
                 except json.JSONDecodeError:
@@ -411,7 +466,6 @@ class RemoteControlServer:
             if websocket in self.connected_clients:
                 self.is_client_connected = False
                 self.connected_clients.remove(websocket)
-                # 웹 클라이언트들에게 연결 해제 알림
                 for web_client in self.web_clients:
                     try:
                         await web_client.send(json.dumps({
@@ -457,7 +511,31 @@ class RemoteControlServer:
             
             await asyncio.Future()
 
+def cleanup_firewall():
+    """방화벽 규칙 제거"""
+    if is_admin():
+        try:
+            powershell_command = """
+            $ruleName = "Remote Control Server"
+            Remove-NetFirewallRule -DisplayName "$ruleName (TCP 8080)" -ErrorAction SilentlyContinue
+            Remove-NetFirewallRule -DisplayName "$ruleName (TCP 8081)" -ErrorAction SilentlyContinue
+            """
+            subprocess.run(["powershell", "-Command", powershell_command], check=True)
+            print("[+] 방화벽 규칙이 제거되었습니다.")
+        except Exception as e:
+            print(f"[!] 방화벽 규칙 제거 중 오류 발생: {e}")
+
 def main():
+    if not is_admin():
+        print("[!] 관리자 권한이 필요합니다. 관리자 권한으로 재시작합니다...")
+        run_as_admin()
+        sys.exit()
+
+    if not setup_firewall():
+        print("[!] 방화벽 설정에 실패했습니다.")
+        input("계속하려면 아무 키나 누르세요...")
+        sys.exit(1)
+
     server = RemoteControlServer()
     try:
         asyncio.run(server.start())
@@ -465,6 +543,9 @@ def main():
         print("\n서버를 종료합니다...")
     except Exception as e:
         print(f"서버 실행 중 오류 발생: {e}")
+        input("계속하려면 아무 키나 누르세요...")
+    finally:
+        cleanup_firewall()
 
 if __name__ == '__main__':
     main()
