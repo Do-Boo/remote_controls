@@ -14,6 +14,7 @@ class QRScanView extends StatefulWidget {
 class _QRScanViewState extends State<QRScanView> {
   late MobileScannerController scannerController;
   bool isFlashOn = false;
+  bool isProcessingCode = false; // 스캔 처리 중 상태 추가
   final TextEditingController codeController = TextEditingController();
 
   @override
@@ -30,25 +31,32 @@ class _QRScanViewState extends State<QRScanView> {
   }
 
   void connectWithCode(String rawData) async {
-    if (rawData.isNotEmpty) {
-      print('QRScanView: Raw data received: $rawData');
-      try {
-        // JSON 형식인지 확인
-        if (rawData.startsWith('{')) {
-          final jsonData = json.decode(rawData);
-          print('QRScanView: Parsed JSON data: $jsonData');
-        }
+    if (isProcessingCode || rawData.isEmpty) return; // 처리 중이면 무시
 
-        final controller = Get.find<RemoteControlController>();
-        controller.connectWithCode(rawData);
-      } catch (e) {
-        print('QRScanView connection error: $e');
-        Get.snackbar(
-          '연결 오류',
-          '연결 중 오류가 발생했습니다.',
-          snackPosition: SnackPosition.BOTTOM,
-        );
+    setState(() {
+      isProcessingCode = true; // 처리 시작
+    });
+
+    try {
+      print('QRScanView: Raw data received: $rawData');
+      if (rawData.startsWith('{')) {
+        final jsonData = json.decode(rawData);
+        print('QRScanView: Parsed JSON data: $jsonData');
       }
+
+      final controller = Get.find<RemoteControlController>();
+      await controller.connectWithCode(rawData); // await 추가
+    } catch (e) {
+      print('QRScanView connection error: $e');
+      Get.snackbar(
+        '연결 오류',
+        '연결 중 오류가 발생했습니다.',
+        snackPosition: SnackPosition.BOTTOM,
+      );
+    } finally {
+      setState(() {
+        isProcessingCode = false; // 처리 완료
+      });
     }
   }
 
