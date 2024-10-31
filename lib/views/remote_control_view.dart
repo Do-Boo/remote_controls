@@ -35,8 +35,8 @@ class RemoteControlView extends GetView<RemoteControlController> {
                   // 레이저 포인터 모드일 때만 마우스 움직임 활성화
                   if (controller.isLaserMode.value) {
                     controller.updateMousePosition(
-                      details.localPosition,
-                      screenSize,
+                      details.localPosition.dx,
+                      details.localPosition.dy,
                     );
                   }
                 },
@@ -168,14 +168,14 @@ class RemoteControlView extends GetView<RemoteControlController> {
                   onPressed: controller.togglePresentationMode,
                   tooltip: '프레젠테이션 모드',
                 )),
-            // Obx(() => IconButton(
-            //       icon: Icon(
-            //         Icons.highlight,
-            //         color: controller.isLaserMode.value ? Colors.red : Colors.white,
-            //       ),
-            //       onPressed: controller.toggleLaserMode,
-            //       tooltip: '레이저 포인터',
-            //     )),
+            Obx(() => IconButton(
+                  icon: Icon(
+                    Icons.highlight,
+                    color: controller.isLaserMode.value ? Colors.red : Colors.white,
+                  ),
+                  onPressed: controller.toggleLaserMode,
+                  tooltip: '레이저 포인터',
+                )),
             IconButton(
               icon: const Icon(Icons.brightness_1, color: Colors.white),
               onPressed: controller.toggleBlackScreen,

@@ -1,10 +1,19 @@
 import 'dart:async';
 import 'dart:collection';
-import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
+import 'package:sensors_plus/sensors_plus.dart';
 import '../services/websocket_service.dart';
 import 'dart:convert';
+
+class AccelerometerData {
+  final double x;
+  final double y;
+  final double z;
+  final int timestamp;
+
+  AccelerometerData(this.x, this.y, this.z, this.timestamp);
+}
 
 class RemoteControlController extends GetxController {
   final WebSocketService _wsService = Get.find<WebSocketService>();
@@ -15,42 +24,121 @@ class RemoteControlController extends GetxController {
   final isLaserMode = false.obs;
   final mousePosition = Rx<Point>({'x': 0.0, 'y': 0.0});
 
-  // 마우스 이동 관련 상수
-  static const double baseMultiplier = 10.0; // 기본 이동 배율
-  static const double smoothness = 0.3; // 부드러움 계수
-  static const double minMovementThreshold = 0.5; // 최소 이동 감지 거리
-  static const _updateInterval = Duration(milliseconds: 16); // 60 FPS
-  static const _queueMaxLength = 5; // 이동 평균 계산용 큐 길이
+  // 가속도 센서 관련 상수
+  static const double accelerometerThreshold = 0.5;
+  static const double sensitivityX = 15.0;
+  static const double sensitivityY = 15.0;
+  static const double smoothingFactor = 0.3;
 
   // 마우스 이동 관련 변수
-  double _velocityX = 0;
-  double _velocityY = 0;
-  Offset? _lastPosition;
-  final Queue<Offset> _movementQueue = Queue<Offset>();
+  double _velocityX = 0.0;
+  double _velocityY = 0.0;
+  final Queue<AccelerometerData> _accelerometerQueue = Queue<AccelerometerData>();
+  static const int _queueMaxLength = 5;
   Timer? _mouseMoveTimer;
+  StreamSubscription<AccelerometerEvent>? _accelerometerSubscription;
 
+  // 활성화 관리
   Timer? _inactivityTimer;
   Timer? _keepAliveTimer;
+  bool _isAccelerometerActive = false;
 
   @override
   void onInit() {
     super.onInit();
-    // 화면이 꺼지지 않도록 설정
     WakelockPlus.enable();
-
-    // 비활성 타이머 시작
     _startInactivityTimer();
 
-    // 연결 상태 변경 감지
     ever(isConnected, (bool connected) {
       if (connected) {
         print('Connected to server! Navigating to RemoteControlView');
         Get.toNamed('/remote_control');
         _startKeepAliveTimer();
+        _startAccelerometer();
       } else {
-        Get.offNamed('/qr_scan'); // 연결 해제시 QR 스캔 화면으로
+        Get.offNamed('/qr_scan');
         _keepAliveTimer?.cancel();
+        _stopAccelerometer();
       }
+    });
+  }
+
+  void _startAccelerometer() {
+    if (_isAccelerometerActive) return;
+
+    _accelerometerSubscription = accelerometerEvents.listen((AccelerometerEvent event) {
+      if (!isConnected.value || !_isAccelerometerActive) return;
+
+      // 중력 가속도 보정 (기기 방향에 따라 조정 필요할 수 있음)
+      double x = event.x;
+      double y = event.y;
+
+      // 노이즈 필터링
+      if (x.abs() < accelerometerThreshold && y.abs() < accelerometerThreshold) return;
+
+      _updateAccelerometerQueue(event);
+      final avgAcceleration = _calculateAverageAcceleration();
+
+      // 속도 계산 및 부드러운 이동
+      _velocityX += (avgAcceleration.x * sensitivityX - _velocityX) * smoothingFactor;
+      _velocityY += (avgAcceleration.y * sensitivityY - _velocityY) * smoothingFactor;
+
+      _sendMouseMoveCommand();
+    });
+
+    _isAccelerometerActive = true;
+  }
+
+  void _stopAccelerometer() {
+    _accelerometerSubscription?.cancel();
+    _isAccelerometerActive = false;
+    _velocityX = 0;
+    _velocityY = 0;
+    _accelerometerQueue.clear();
+  }
+
+  void _updateAccelerometerQueue(AccelerometerEvent event) {
+    _accelerometerQueue.add(AccelerometerData(
+      event.x,
+      event.y,
+      event.z,
+      DateTime.now().millisecondsSinceEpoch,
+    ));
+    if (_accelerometerQueue.length > _queueMaxLength) {
+      _accelerometerQueue.removeFirst();
+    }
+  }
+
+  AccelerometerEvent _calculateAverageAcceleration() {
+    if (_accelerometerQueue.isEmpty) {
+      return AccelerometerEvent(0, 0, 0, DateTime.now());
+    }
+
+    double sumX = 0, sumY = 0, sumZ = 0;
+    int latestTimestamp = _accelerometerQueue.last.timestamp;
+
+    for (var data in _accelerometerQueue) {
+      sumX += data.x;
+      sumY += data.y;
+      sumZ += data.z;
+    }
+
+    return AccelerometerEvent(sumX / _accelerometerQueue.length, sumY / _accelerometerQueue.length, sumZ / _accelerometerQueue.length,
+        DateTime.fromMillisecondsSinceEpoch(latestTimestamp));
+  }
+
+  void _sendMouseMoveCommand() {
+    _mouseMoveTimer?.cancel();
+    _mouseMoveTimer = Timer(const Duration(milliseconds: 16), () {
+      if (!isConnected.value) return;
+
+      _wsService.sendCommand({
+        'type': 'mouse_move_relative',
+        'dx': -_velocityX,
+        'dy': _velocityY,
+        'is_laser': isLaserMode.value,
+        'timestamp': DateTime.now().millisecondsSinceEpoch,
+      });
     });
   }
 
@@ -73,26 +161,8 @@ class RemoteControlController extends GetxController {
     });
   }
 
-  // 모든 사용자 입력에서 타이머 리셋
   void _handleUserInput() {
     _resetInactivityTimer();
-  }
-
-  void _handleConnectionChange(bool connected) {
-    isConnected.value = connected;
-    if (connected) {
-      Get.snackbar(
-        '연결 성공',
-        '리모컨이 연결되었습니다.',
-        snackPosition: SnackPosition.BOTTOM,
-      );
-    } else {
-      Get.snackbar(
-        '연결 해제',
-        '리모컨 연결이 해제되었습니다.',
-        snackPosition: SnackPosition.BOTTOM,
-      );
-    }
   }
 
   Future<void> connectWithCode(String input) async {
@@ -131,80 +201,9 @@ class RemoteControlController extends GetxController {
     }
   }
 
-  void updateMousePosition(Offset position, Size screenSize) {
-    if (!isConnected.value) return;
-
-    if (_lastPosition == null) {
-      _initializeMovement(position);
-      return;
-    }
-
-    final now = DateTime.now();
-
-    final dx = (position.dx - _lastPosition!.dx);
-    final dy = (position.dy - _lastPosition!.dy);
-
-    if (dx.abs() < minMovementThreshold && dy.abs() < minMovementThreshold) return;
-
-    _updateMovementQueue(Offset(dx, dy));
-    final avgMovement = _calculateAverageMovement();
-
-    final targetVelocityX = avgMovement.dx * baseMultiplier * 3;
-    final targetVelocityY = avgMovement.dy * baseMultiplier * 3;
-
-    _velocityX += (targetVelocityX - _velocityX) * smoothness;
-    _velocityY += (targetVelocityY - _velocityY) * smoothness;
-
-    _sendMouseMoveCommand(now);
-    _lastPosition = position;
-  }
-
-  void _initializeMovement(Offset position) {
-    _lastPosition = position;
-    _velocityX = 0;
-    _velocityY = 0;
-    _movementQueue.clear();
-  }
-
-  void _updateMovementQueue(Offset movement) {
-    _movementQueue.add(movement);
-    if (_movementQueue.length > _queueMaxLength) {
-      _movementQueue.removeFirst();
-    }
-  }
-
-  Offset _calculateAverageMovement() {
-    double avgDx = 0;
-    double avgDy = 0;
-    for (var offset in _movementQueue) {
-      avgDx += offset.dx;
-      avgDy += offset.dy;
-    }
-    return Offset(avgDx / _movementQueue.length, avgDy / _movementQueue.length);
-  }
-
-  void _sendMouseMoveCommand(DateTime timestamp) {
-    _mouseMoveTimer?.cancel();
-    _mouseMoveTimer = Timer(_updateInterval, () {
-      _wsService.sendCommand({
-        'type': 'mouse_move_relative',
-        'dx': _velocityX,
-        'dy': _velocityY,
-        'is_laser': isLaserMode.value,
-        'timestamp': timestamp.millisecondsSinceEpoch,
-      });
-    });
-  }
-
-  void _resetMovement() {
-    _lastPosition = null;
-    _velocityX = 0;
-    _velocityY = 0;
-    _movementQueue.clear();
-  }
-
   void sendClick(String type) {
     if (!isConnected.value) return;
+    _handleUserInput();
     _wsService.sendCommand({
       'type': 'mouse_click',
       'click_type': type,
@@ -213,6 +212,7 @@ class RemoteControlController extends GetxController {
 
   void sendKeyCommand(String key) {
     if (!isConnected.value) return;
+    _handleUserInput();
     print('Sending key command: $key');
     _wsService.sendCommand({
       'type': 'keyboard',
@@ -247,7 +247,7 @@ class RemoteControlController extends GetxController {
   void togglePresentationMode() {
     if (!isConnected.value) return;
     isPresentationMode.toggle();
-    print('Toggling presentation mode: ${isPresentationMode.value}'); // 디버깅용 로그 추가
+    print('Toggling presentation mode: ${isPresentationMode.value}');
     _wsService.sendCommand({
       'type': 'keyboard',
       'key': isPresentationMode.value ? 'f5' : 'esc',
@@ -256,14 +256,11 @@ class RemoteControlController extends GetxController {
 
   void toggleLaserMode() {
     isLaserMode.toggle();
-  }
-
-  void adjustVolume(double delta) {
-    if (!isConnected.value) return;
-    _wsService.sendCommand({
-      'type': 'volume',
-      'delta': delta,
-    });
+    if (isLaserMode.value) {
+      _stopAccelerometer();
+    } else {
+      _startAccelerometer();
+    }
   }
 
   void disconnect() {
@@ -275,16 +272,38 @@ class RemoteControlController extends GetxController {
     isConnected.value = false;
     isPresentationMode.value = false;
     isLaserMode.value = false;
+    _stopAccelerometer();
+  }
+
+  void updateMousePosition(double x, double y) {
+    mousePosition.value = {'x': x, 'y': y};
+    if (isConnected.value) {
+      _wsService.sendCommand({
+        'type': 'mouse_move_absolute',
+        'x': x,
+        'y': y,
+        'is_laser': isLaserMode.value,
+        'timestamp': DateTime.now().millisecondsSinceEpoch,
+      });
+    }
+  }
+
+  void adjustVolume(double value) {
+    if (!isConnected.value) return;
+    _handleUserInput();
+    _wsService.sendCommand({
+      'type': 'volume_adjust',
+      'value': value,
+    });
   }
 
   @override
   void onClose() {
-    // 화면 켜짐 유지 해제
     WakelockPlus.disable();
     _inactivityTimer?.cancel();
     _keepAliveTimer?.cancel();
     _mouseMoveTimer?.cancel();
-    _resetMovement();
+    _stopAccelerometer();
     disconnect();
     super.onClose();
   }
