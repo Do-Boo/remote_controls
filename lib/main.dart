@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
-import 'package:presentation_remote_controls/services/websocket_service.dart';
+import 'package:presentation_remote_controls/services/udp_service.dart';
 import 'views/qr_scan_view.dart';
 import 'views/remote_control_view.dart';
 import 'bindings/remote_control_binding.dart';
@@ -11,7 +11,7 @@ void main() async {
     WidgetsFlutterBinding.ensureInitialized();
 
     // GetX 서비스 초기화
-    await Get.putAsync(() async => WebSocketService());
+    await Get.putAsync(() async => UDPService());
 
     runApp(const MyApp());
   } catch (e) {
@@ -36,7 +36,7 @@ class MyApp extends StatelessWidget {
       getPages: [
         GetPage(
           name: '/qr_scan',
-          page: () => const QRScanView(),
+          page: () => QRScanView(),
           binding: RemoteControlBinding(),
         ),
         GetPage(
