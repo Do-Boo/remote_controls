@@ -247,6 +247,9 @@ class RemoteControlServer:
             k=6
         ))
         self.client_address = None
+        
+        # 클라이언트 관리
+        self._clients = {}  # 클라이언트 관리를 위한 딕셔너리 추가
     
         # 시스템 설정
         self.os_type = platform.system()
@@ -294,6 +297,27 @@ class RemoteControlServer:
         
         self.logger.info(f"Initialized RemoteControlServer on {self.os_type}")
         self.logger.info(f"Screen size: {self.screen_width}x{self.screen_height}")
+
+    def is_client_authenticated(self, addr):
+        """클라이언트 인증 상태 확인"""
+        return addr in self._clients
+        
+    def authenticate_client(self, addr):
+        """클라이언트 인증"""
+        self._clients[addr] = {
+            'last_activity': time.time(),
+            'authenticated': True
+        }
+        
+    def update_client_activity(self, addr):
+        """클라이언트 활동 시간 업데이트"""
+        if addr in self._clients:
+            self._clients[addr]['last_activity'] = time.time()
+            
+    def remove_client(self, addr):
+        """클라이언트 제거"""
+        if addr in self._clients:
+            del self._clients[addr]
 
     def _generate_qr_code(self):
         """QR 코드 생성"""
