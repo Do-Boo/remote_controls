@@ -1,296 +1,199 @@
 import 'dart:async';
 import 'dart:collection';
-import 'dart:math' as math;
-import 'package:flutter/material.dart';
+import 'dart:math';
 import 'package:get/get.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:sensors_plus/sensors_plus.dart';
+import '../services/udp_service.dart';
 import 'dart:convert';
 
-import '../services/udp_service.dart' as udp;
-import '../models/vector_2d.dart';
-import '../models/accelerometer_data.dart';
-import '../enums/control_mode.dart';
-import '../constants/controller_constants.dart';
-
 class RemoteControlController extends GetxController {
-  final udp.UDPService _udpService = Get.find<udp.UDPService>();
+  final UDPService _udpService = Get.find<UDPService>();
 
   // 상태 관리
   final isConnected = false.obs;
-  final controlMode = ControlMode.none.obs;
+  final isPresentationMode = false.obs;
+  final isLaserMode = false.obs;
   final mousePosition = Rx<Point>({'x': 0.0, 'y': 0.0});
-  bool get isPresentationMode => controlMode.value == ControlMode.presentation;
-  bool get isLaserMode => controlMode.value == ControlMode.laser;
+
+  // 가속도계 관련 상수
+  static const double accelerometerThreshold = 0.02; // 더 작은 임계값
+  static const double _baseAcceleration = 0.8; // 기본 감도
+  static const double _minMovement = 0.1; // 최소 움직임 임계값
+  static const double _normalMovement = 0.5; // 일반 움직임 임계값
+  static const double _maxAcceleration = 1.5; // 최대 가속도
+  static const double _smoothingFactor = 0.4; // 부드러움 계수
+
+  // 이동 평균을 위한 큐
+  final Queue<AccelerometerEvent> _accelerometerQueue = Queue<AccelerometerEvent>();
+  static const int _queueMaxLength = 5;
 
   // 마우스 이동 관련 변수
-  final Vector2D _velocity = Vector2D(0, 0);
-  final Queue<AccelerometerData> _accelerometerQueue = Queue<AccelerometerData>();
+  double _accumulatedDx = 0.0;
+  double _accumulatedDy = 0.0;
   Timer? _mouseMoveTimer;
-  Timer? _velocityDecayTimer;
   StreamSubscription<AccelerometerEvent>? _accelerometerSubscription;
 
   // 활성화 관리
   Timer? _inactivityTimer;
   bool _isAccelerometerActive = false;
-  DateTime _lastUpdateTime = DateTime.now();
-
-  // 마우스 감도 조절
-  final double _currentSensitivityX = ControllerConstants.baseSensitivityX;
-  final double _currentSensitivityY = ControllerConstants.baseSensitivityY;
-
-  bool _isConnecting = false; // 연결 시도 중 상태 추가
 
   @override
   void onInit() {
     super.onInit();
-    _initializeController();
-    _setupEventListeners();
-  }
-
-  void _initializeController() {
     WakelockPlus.enable();
     _startInactivityTimer();
-    _startVelocityDecayTimer();
-  }
 
-  void _setupEventListeners() {
-    ever(_udpService.isConnected, _handleConnectionStateChange);
-    ever(_udpService.connectionState, _handleDetailedConnectionState);
-  }
-
-  void _handleConnectionStateChange(bool connected) {
-    isConnected.value = connected;
-    if (connected) {
-      print('Connected to server! Navigating to RemoteControlView');
-      Get.toNamed('/remote_control');
-      _startAccelerometer();
-    } else {
-      print('Disconnected from server');
-      Get.offNamed('/qr_scan');
-      _stopAccelerometer();
-    }
-  }
-
-  void _handleDetailedConnectionState(udp.ConnectionState state) {
-    switch (state) {
-      case udp.ConnectionState.connecting:
-        print('Connecting to server...');
-        break;
-      case udp.ConnectionState.authenticating:
-        print('Authenticating...');
-        break;
-      case udp.ConnectionState.connected:
-        print('Connection established');
-        break;
-      case udp.ConnectionState.disconnected:
-        print('Connection lost');
-        break;
-    }
+    // UDP 서비스 연결 상태 감시
+    ever(_udpService.isConnected, (bool connected) {
+      isConnected.value = connected;
+      if (connected) {
+        print('Connected to server! Navigating to RemoteControlView');
+        Get.toNamed('/remote_control');
+        _startAccelerometer();
+      } else {
+        print('Disconnected from server');
+        Get.offNamed('/qr_scan');
+        _stopAccelerometer();
+      }
+    });
   }
 
   Future<void> connectWithCode(String input) async {
-    if (_isConnecting) {
-      print('Already attempting to connect...');
-      return;
-    }
-
     try {
-      _isConnecting = true;
       print('Attempting to connect with input: $input');
+      Map<String, dynamic> connectionData;
 
-      final Map<String, dynamic> connectionData = _parseConnectionData(input);
-      await _establishConnection(connectionData);
-    } catch (e) {
-      _handleConnectionError(e);
-    } finally {
-      _isConnecting = false;
-    }
-  }
+      if (input.startsWith('{')) {
+        connectionData = json.decode(input);
+        print('QRScanView: Parsed JSON data: $connectionData');
+      } else {
+        print('Invalid connection data format');
+        throw Exception('잘못된 연결 데이터');
+      }
 
-  Map<String, dynamic> _parseConnectionData(String input) {
-    if (!input.startsWith('{')) {
-      throw Exception('잘못된 연결 데이터 형식');
-    }
-    final data = json.decode(input);
-    print('Parsed connection data: $data');
-    return data;
-  }
+      print('Connecting with data: $connectionData');
 
-  // 연결 시도 로직 분리
-  Future<void> _establishConnection(Map<String, dynamic> data) async {
-    try {
       await _udpService.connectToServer(
-        data['ip'],
-        data['port'],
-        data['code'].toString(),
+        connectionData['ip'],
+        connectionData['port'],
+        connectionData['code'].toString(),
       );
     } catch (e) {
-      print('Connection establishment error: $e');
+      print('Connection error: $e');
+      Get.snackbar(
+        '연결 오류',
+        '서버 연결에 실패했습니다: ${e.toString()}',
+        snackPosition: SnackPosition.BOTTOM,
+      );
       rethrow;
-    }
-  }
-
-  Future<void> _handleConnectionError(dynamic error) async {
-    print('Connection error: $error');
-
-    // 에러 메시지 표시 및 사용자 응답 대기
-    final shouldRetry = await Get.dialog<bool>(
-      AlertDialog(
-        title: const Text('연결 오류'),
-        content: Text('서버 연결에 실패했습니다: ${error.toString()}\n다시 시도하시겠습니까?'),
-        actions: [
-          TextButton(
-            onPressed: () => Get.back(result: false),
-            child: const Text('취소'),
-          ),
-          TextButton(
-            onPressed: () => Get.back(result: true),
-            child: const Text('다시 시도'),
-          ),
-        ],
-      ),
-      barrierDismissible: false, // 배경 탭으로 닫기 방지
-    );
-
-    if (shouldRetry == true) {
-      // QR 스캔 뷰로 돌아가기
-      Get.offNamed('/qr_scan');
     }
   }
 
   void _startAccelerometer() {
     if (_isAccelerometerActive) return;
 
-    _accelerometerSubscription = accelerometerEvents.listen(_handleAccelerometerEvent);
+    _accelerometerSubscription = accelerometerEvents.listen((AccelerometerEvent event) {
+      if (!isConnected.value || !_isAccelerometerActive) return;
+
+      // 가속도 데이터 처리
+      final acceleration = _processAccelerometerData(event);
+      if (acceleration != null) {
+        _updateMouseMovement(acceleration);
+      }
+    });
+
     _isAccelerometerActive = true;
-    print('Accelerometer activated');
   }
 
-  void _handleAccelerometerEvent(AccelerometerEvent event) {
-    if (!isConnected.value || !_isAccelerometerActive) return;
+  AccelerationData? _processAccelerometerData(AccelerometerEvent event) {
+    // 노이즈 필터링
+    if (event.x.abs() < accelerometerThreshold && event.y.abs() < accelerometerThreshold) {
+      return null;
+    }
 
-    final now = DateTime.now();
-    final deltaTime = now.difference(_lastUpdateTime).inMilliseconds / 1000.0;
-    _lastUpdateTime = now;
-
-    if (_isUnderThreshold(event)) return;
-
-    _updateAccelerometerQueue(event, now);
-    _updateVelocity(deltaTime);
-    _sendMouseMoveCommand();
-  }
-
-  bool _isUnderThreshold(AccelerometerEvent event) {
-    return event.x.abs() < ControllerConstants.accelerometerThreshold && event.y.abs() < ControllerConstants.accelerometerThreshold;
-  }
-
-  void _updateAccelerometerQueue(AccelerometerEvent event, DateTime timestamp) {
-    _accelerometerQueue.add(AccelerometerData(
-      Vector2D(event.x, event.y),
-      timestamp,
-    ));
-
-    if (_accelerometerQueue.length > ControllerConstants.queueMaxLength) {
+    // 이동 평균 계산을 위해 큐에 추가
+    _accelerometerQueue.add(event);
+    if (_accelerometerQueue.length > _queueMaxLength) {
       _accelerometerQueue.removeFirst();
     }
-  }
 
-  void _updateVelocity(double deltaTime) {
-    if (_accelerometerQueue.isEmpty) return;
+    // 평균 가속도 계산
+    double avgX = 0.0, avgY = 0.0;
+    for (var e in _accelerometerQueue) {
+      avgX += e.x;
+      avgY += e.y;
+    }
+    avgX /= _accelerometerQueue.length;
+    avgY /= _accelerometerQueue.length;
 
-    final avgAcceleration = _calculateWeightedAverage();
-    _applyVelocityChange(avgAcceleration, deltaTime);
-  }
+    // 움직임의 크기 계산
+    final movement = sqrt(avgX * avgX + avgY * avgY);
 
-  Vector2D _calculateWeightedAverage() {
-    var avgAcceleration = Vector2D(0, 0);
-    var totalWeight = 0.0;
+    // 감도 계산
+    double sensitivity = _baseAcceleration;
+    if (movement < _minMovement) {
+      sensitivity *= 0.3;
+    } else if (movement < _normalMovement) {
+      sensitivity *= 1.0;
+    } else {
+      final acceleration = min(_maxAcceleration, 1.0 + (movement - _normalMovement) * 0.3);
+      sensitivity *= acceleration;
+    }
 
-    _accelerometerQueue.toList().asMap().forEach((index, data) {
-      final weight = (index + 1) / _accelerometerQueue.length;
-      totalWeight += weight;
-      avgAcceleration.x += data.acceleration.x * weight;
-      avgAcceleration.y += data.acceleration.y * weight;
-    });
-
-    return Vector2D(
-      avgAcceleration.x / totalWeight,
-      avgAcceleration.y / totalWeight,
+    return AccelerationData(
+      dx: avgX * sensitivity,
+      dy: avgY * sensitivity,
     );
   }
 
-  void _applyVelocityChange(Vector2D acceleration, double deltaTime) {
-    _velocity.x += (acceleration.x * _currentSensitivityX * deltaTime - _velocity.x) * ControllerConstants.smoothingFactor;
-    _velocity.y += (acceleration.y * _currentSensitivityY * deltaTime - _velocity.y) * ControllerConstants.smoothingFactor;
-  }
+  void _updateMouseMovement(AccelerationData acceleration) {
+    // 이동 거리 누적
+    _accumulatedDx += acceleration.dx;
+    _accumulatedDy += acceleration.dy;
 
-  void _startVelocityDecayTimer() {
-    _velocityDecayTimer?.cancel();
-    _velocityDecayTimer = Timer.periodic(
-      const Duration(milliseconds: ControllerConstants.mouseMoveInterval),
-      (_) => _applyVelocityDecay(),
-    );
-  }
-
-  void _applyVelocityDecay() {
-    _velocity.x *= ControllerConstants.velocityDecay;
-    _velocity.y *= ControllerConstants.velocityDecay;
-  }
-
-  void updateMousePosition(double x, double y) {
-    if (!isConnected.value) return;
-
-    final normalizedPosition = _normalizePosition(x, y);
-    mousePosition.value = normalizedPosition;
-
-    _sendMouseMoveAbsolute(normalizedPosition);
-  }
-
-  Map<String, double> _normalizePosition(double x, double y) {
-    return {
-      'x': math.min(1.0, math.max(0.0, x / Get.width)),
-      'y': math.min(1.0, math.max(0.0, y / Get.height)),
-    };
-  }
-
-  void _sendMouseMoveAbsolute(Map<String, double> position) {
-    _udpService.sendCommand({
-      'type': 'mouse_move',
-      'x': position['x'],
-      'y': position['y'],
-      'is_laser': isLaserMode,
-      'timestamp': DateTime.now().millisecondsSinceEpoch,
-    });
-  }
-
-  void _sendMouseMoveCommand() {
+    // 부드러운 이동을 위해 타이머 사용
     _mouseMoveTimer?.cancel();
-    _mouseMoveTimer = Timer(
-      const Duration(milliseconds: ControllerConstants.mouseMoveInterval),
-      () => _sendMouseMoveRelative(),
-    );
+    _mouseMoveTimer = Timer(const Duration(milliseconds: 16), () {
+      if (!isConnected.value) return;
+
+      // 실제 이동할 거리 계산
+      final dx = _accumulatedDx * _smoothingFactor;
+      final dy = _accumulatedDy * _smoothingFactor;
+
+      // 남은 거리 저장
+      _accumulatedDx -= dx;
+      _accumulatedDy -= dy;
+
+      // 이동 명령 전송
+      _sendMouseMoveCommand(dx, dy);
+    });
   }
 
-  void _sendMouseMoveRelative() {
-    if (!isConnected.value) return;
-
+  void _sendMouseMoveCommand(double dx, double dy) {
     _udpService.sendCommand({
       'type': 'mouse_move_relative',
-      'dx': -_velocity.x,
-      'dy': _velocity.y,
-      'is_laser': isLaserMode,
+      'dx': -dx, // x축 반전
+      'dy': dy,
+      'is_laser': isLaserMode.value,
       'timestamp': DateTime.now().millisecondsSinceEpoch,
     });
   }
 
-  // 타이머 관리
+  void _stopAccelerometer() {
+    _accelerometerSubscription?.cancel();
+    _isAccelerometerActive = false;
+    _accelerometerQueue.clear();
+    _accumulatedDx = 0;
+    _accumulatedDy = 0;
+    _mouseMoveTimer?.cancel();
+  }
+
   void _startInactivityTimer() {
     _inactivityTimer?.cancel();
-    _inactivityTimer = Timer(
-      const Duration(minutes: ControllerConstants.inactivityTimeout),
-      disconnect,
-    );
+    _inactivityTimer = Timer(const Duration(minutes: 10), () {
+      disconnect();
+    });
   }
 
   void _resetInactivityTimer() {
@@ -327,66 +230,63 @@ class RemoteControlController extends GetxController {
   }
 
   // 프레젠테이션 제어
-  void nextSlide() => sendKeyCommand('right');
-  void previousSlide() => sendKeyCommand('left');
-  void toggleBlackScreen() => sendKeyCommand('b');
-  void toggleWhiteScreen() => sendKeyCommand('w');
+  void nextSlide() {
+    if (!isConnected.value) return;
+    print('Sending next slide command');
+    sendKeyCommand('right');
+  }
+
+  void previousSlide() {
+    if (!isConnected.value) return;
+    print('Sending previous slide command');
+    sendKeyCommand('left');
+  }
+
+  void toggleBlackScreen() {
+    if (!isConnected.value) return;
+    print('Sending black screen command');
+    sendKeyCommand('b');
+  }
+
+  void toggleWhiteScreen() {
+    if (!isConnected.value) return;
+    print('Sending white screen command');
+    sendKeyCommand('w');
+  }
 
   void togglePresentationMode() {
     if (!isConnected.value) return;
-
-    if (controlMode.value == ControlMode.presentation) {
-      controlMode.value = ControlMode.none;
-      sendKeyCommand('esc');
-    } else {
-      controlMode.value = ControlMode.presentation;
-      sendKeyCommand('f5');
-    }
-
-    print('Presentation mode: ${controlMode.value}');
+    isPresentationMode.toggle();
+    print('Toggling presentation mode: ${isPresentationMode.value}');
+    _udpService.sendCommand({
+      'type': 'keyboard',
+      'key': isPresentationMode.value ? 'f5' : 'esc',
+      'timestamp': DateTime.now().millisecondsSinceEpoch,
+    });
   }
 
   void toggleLaserMode() {
-    if (controlMode.value == ControlMode.laser) {
-      controlMode.value = ControlMode.none;
-      _startAccelerometer();
-    } else {
-      controlMode.value = ControlMode.laser;
+    isLaserMode.toggle();
+    print('Toggling laser mode: ${isLaserMode.value}');
+    if (isLaserMode.value) {
       _stopAccelerometer();
+    } else {
+      _startAccelerometer();
     }
-
-    print('Laser mode: ${controlMode.value}');
-  }
-
-  void _stopAccelerometer() {
-    _accelerometerSubscription?.cancel();
-    _isAccelerometerActive = false;
-    _velocity.x = 0;
-    _velocity.y = 0;
-    _accelerometerQueue.clear();
-    print('Accelerometer deactivated');
   }
 
   void disconnect() {
     if (!isConnected.value) return;
-
     print('Disconnecting from server');
     _udpService.sendCommand({
       'type': 'disconnect',
       'timestamp': DateTime.now().millisecondsSinceEpoch,
     });
-
-    _cleanup();
-  }
-
-  void _cleanup() {
     _udpService.disconnect();
     isConnected.value = false;
-    controlMode.value = ControlMode.none;
+    isPresentationMode.value = false;
+    isLaserMode.value = false;
     _stopAccelerometer();
-    _velocity.x = 0;
-    _velocity.y = 0;
-    _accelerometerQueue.clear();
   }
 
   @override
@@ -395,11 +295,18 @@ class RemoteControlController extends GetxController {
     WakelockPlus.disable();
     _inactivityTimer?.cancel();
     _mouseMoveTimer?.cancel();
-    _velocityDecayTimer?.cancel();
     _stopAccelerometer();
     disconnect();
     super.onClose();
   }
+}
+
+// 보조 클래스
+class AccelerationData {
+  final double dx;
+  final double dy;
+
+  AccelerationData({required this.dx, required this.dy});
 }
 
 typedef Point = Map<String, double>;

@@ -57,17 +57,9 @@ class RemoteControlView extends GetView<RemoteControlController> {
               // 메인 제어 영역
               Expanded(
                 child: GestureDetector(
-                  onPanUpdate: (details) {
-                    if (controller.isLaserMode) {
-                      // 마우스 위치 업데이트
-                      final dx = details.delta.dx;
-                      final dy = details.delta.dy;
-                      controller.updateMousePosition(dx, dy);
-                    }
-                  },
                   onTapUp: (details) {
                     HapticFeedback.mediumImpact();
-                    if (controller.isLaserMode) {
+                    if (controller.isLaserMode.value) {
                       controller.sendClick('left');
                     } else {
                       if (details.localPosition.dx < screenSize.width / 2) {
@@ -78,13 +70,13 @@ class RemoteControlView extends GetView<RemoteControlController> {
                     }
                   },
                   onDoubleTap: () {
-                    if (controller.isLaserMode) {
+                    if (controller.isLaserMode.value) {
                       HapticFeedback.mediumImpact();
                       controller.sendClick('double');
                     }
                   },
                   onLongPress: () {
-                    if (controller.isLaserMode) {
+                    if (controller.isLaserMode.value) {
                       HapticFeedback.heavyImpact();
                       controller.sendClick('right');
                     }
@@ -97,7 +89,7 @@ class RemoteControlView extends GetView<RemoteControlController> {
                         onTap: () {},
                         splashColor: Colors.grey.withOpacity(0.3),
                         highlightColor: Colors.grey.withOpacity(0.1),
-                        child: Obx(() => controller.isLaserMode
+                        child: Obx(() => controller.isLaserMode.value
                             ? Stack(
                                 children: [
                                   const Center(
@@ -203,7 +195,7 @@ class RemoteControlView extends GetView<RemoteControlController> {
               Obx(() => IconButton(
                     icon: Icon(
                       Icons.play_arrow,
-                      color: controller.isPresentationMode ? Colors.green : Colors.white,
+                      color: controller.isPresentationMode.value ? Colors.green : Colors.white,
                     ),
                     onPressed: () {
                       HapticFeedback.mediumImpact();
@@ -215,7 +207,7 @@ class RemoteControlView extends GetView<RemoteControlController> {
               Obx(() => IconButton(
                     icon: Icon(
                       Icons.highlight,
-                      color: controller.isLaserMode ? Colors.red : Colors.white,
+                      color: controller.isLaserMode.value ? Colors.red : Colors.white,
                     ),
                     onPressed: () {
                       HapticFeedback.mediumImpact();

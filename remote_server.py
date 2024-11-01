@@ -2,6 +2,7 @@ import asyncio
 import json
 import random
 import string
+import math
 import pyautogui
 from aiohttp import web
 import os
@@ -126,15 +127,65 @@ class UDPServerProtocol:
         })
 
     def _handle_mouse_move(self, message: Dict[str, Any], addr: tuple):
-        current_x, current_y = pyautogui.position()
-        dx = float(message.get('dx', 0)) * self.server.mouse_speed_multiplier
-        dy = float(message.get('dy', 0)) * self.server.mouse_speed_multiplier
+        try:
+            # 현재 마우스 위치
+            current_x, current_y = pyautogui.position()
+            
+            # 가속도계 데이터
+            dx = float(message.get('dx', 0))
+            dy = float(message.get('dy', 0))
+            
+            # 데드존 적용
+            if abs(dx) < self.server.mouse_deadzone and abs(dy) < self.server.mouse_deadzone:
+                return
+                
+            # 가속도 기반 감도 조정
+            acceleration = self._calculate_acceleration(dx, dy)
+            dx *= acceleration * self.server.mouse_speed_multiplier
+            dy *= acceleration * self.server.mouse_speed_multiplier
+            
+            # 이동 거리 누적 (부드러운 이동을 위해)
+            self._accumulated_dx = getattr(self, '_accumulated_dx', 0) + dx
+            self._accumulated_dy = getattr(self, '_accumulated_dy', 0) + dy
+            
+            # 실제 이동할 거리 계산
+            move_x = int(self._accumulated_dx)
+            move_y = int(self._accumulated_dy)
+            
+            # 남은 소수점 저장
+            self._accumulated_dx -= move_x
+            self._accumulated_dy -= move_y
+            
+            # 최종 위치 계산
+            new_x = max(0, min(current_x + move_x, self.server.screen_width - 1))
+            new_y = max(0, min(current_y + move_y, self.server.screen_height - 1))
+            
+            if abs(move_x) > 0 or abs(move_y) > 0:
+                pyautogui.moveTo(new_x, new_y, duration=0)
+                self.logger.debug(f"Mouse moved: ({move_x}, {move_y}) to ({new_x}, {new_y})")
+                
+        except Exception as e:
+            self.logger.error(f"Mouse move error: {e}")
+
+    def _calculate_acceleration(self, dx: float, dy: float) -> float:
+        """가속도 기반 감도 계산"""
+        # 움직임의 크기 계산
+        movement = math.sqrt(dx * dx + dy * dy)
         
-        new_x = max(0, min(int(current_x + dx), self.server.screen_width - 1))
-        new_y = max(0, min(int(current_y + dy), self.server.screen_height - 1))
+        # 기본 감도
+        base_sensitivity = 0.8  # 기본 감도를 낮춤
         
-        self.logger.debug(f"Moving mouse to ({new_x}, {new_y})")
-        pyautogui.moveTo(new_x, new_y, duration=0)
+        # 미세 움직임
+        if movement < 0.1:  # 더 작은 임계값
+            return base_sensitivity * 0.3
+        # 일반 움직임
+        elif movement < 0.5:  # 임계값 조정
+            return base_sensitivity
+        # 빠른 움직임
+        else:
+            # 최대 1.5배로 제한
+            acceleration = min(1.5, 1.0 + (movement - 0.5) * 0.3)
+            return base_sensitivity * acceleration
 
     def _handle_mouse_click(self, message: Dict[str, Any], addr: tuple):
         click_type = message.get('click_type', 'left')
@@ -191,6 +242,7 @@ class UDPServerProtocol:
     
 class RemoteControlServer:
     def __init__(self, udp_port=8080, http_port=8081):
+
         # 로거 설정
         self.logger = logging.getLogger('RemoteControlServer')
         
@@ -225,6 +277,20 @@ class RemoteControlServer:
         
         # 비활성 체크 태스크
         self._inactivity_check_task = None
+
+        # 마우스 제어 설정
+        self.mouse_speed_multiplier = 0.5  # 기본값을 더 낮게 조정
+        self.mouse_acceleration = 1.1   # 가속 계수를 약간 낮춤
+        self.mouse_smoothing = 0.4     # 부드러움을 약간 높임
+        self.mouse_deadzone = 0.02     # 데드존을 더 작게 설정
+        
+        # 마우스 보정 설정
+        self.calibration = {
+            'x_scale': 1.0,
+            'y_scale': 1.0,
+            'x_offset': 0.0,
+            'y_offset': 0.0
+        }
 
     def _generate_qr_code(self):
         """QR 코드 생성"""
