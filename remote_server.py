@@ -128,44 +128,38 @@ class UDPServerProtocol:
 
     def _handle_mouse_move(self, message: Dict[str, Any], addr: tuple):
         try:
-            # 현재 마우스 위치
-            current_x, current_y = pyautogui.position()
-            
-            # 가속도계 데이터
-            dx = float(message.get('dx', 0))
-            dy = float(message.get('dy', 0))
-            
-            # 데드존 적용
-            if abs(dx) < self.server.mouse_deadzone and abs(dy) < self.server.mouse_deadzone:
-                return
+            if message.get('is_laser', False):
+                # 레이저 모드: 절대 좌표 처리
+                x = float(message.get('x', 0.5)) * self.server.screen_width
+                y = float(message.get('y', 0.5)) * self.server.screen_height
                 
-            # 가속도 기반 감도 조정
-            acceleration = self._calculate_acceleration(dx, dy)
-            dx *= acceleration * self.server.mouse_speed_multiplier
-            dy *= acceleration * self.server.mouse_speed_multiplier
-            
-            # 이동 거리 누적 (부드러운 이동을 위해)
-            self._accumulated_dx = getattr(self, '_accumulated_dx', 0) + dx
-            self._accumulated_dy = getattr(self, '_accumulated_dy', 0) + dy
-            
-            # 실제 이동할 거리 계산
-            move_x = int(self._accumulated_dx)
-            move_y = int(self._accumulated_dy)
-            
-            # 남은 소수점 저장
-            self._accumulated_dx -= move_x
-            self._accumulated_dy -= move_y
-            
-            # 최종 위치 계산
-            new_x = max(0, min(current_x + move_x, self.server.screen_width - 1))
-            new_y = max(0, min(current_y + move_y, self.server.screen_height - 1))
-            
-            if abs(move_x) > 0 or abs(move_y) > 0:
+                # 화면 경계 확인
+                x = max(0, min(x, self.server.screen_width - 1))
+                y = max(0, min(y, self.server.screen_height - 1))
+                
+                print(f"    Laser pointer moved to: ({x:.2f}, {y:.2f})")
+                pyautogui.moveTo(int(x), int(y), duration=0)
+                
+            else:
+                # 일반 모드: 상대 좌표 처리
+                current_x, current_y = pyautogui.position()
+                dx = float(message.get('dx', 0))
+                dy = float(message.get('dy', 0))
+                
+                # 이동 거리 계산
+                new_x = int(current_x + dx)
+                new_y = int(current_y + dy)
+                
+                # 화면 경계 확인
+                new_x = max(0, min(new_x, self.server.screen_width - 1))
+                new_y = max(0, min(new_y, self.server.screen_height - 1))
+                
+                print(f"    Mouse moved to: ({new_x}, {new_y})")
                 pyautogui.moveTo(new_x, new_y, duration=0)
-                self.logger.debug(f"Mouse moved: ({move_x}, {move_y}) to ({new_x}, {new_y})")
-                
+            
         except Exception as e:
             self.logger.error(f"Mouse move error: {e}")
+            print(f"    Error moving mouse: {e}")
 
     def _calculate_acceleration(self, dx: float, dy: float) -> float:
         """가속도 기반 감도 계산"""
@@ -242,7 +236,6 @@ class UDPServerProtocol:
     
 class RemoteControlServer:
     def __init__(self, udp_port=8080, http_port=8081):
-
         # 로거 설정
         self.logger = logging.getLogger('RemoteControlServer')
         
@@ -251,46 +244,56 @@ class RemoteControlServer:
         self.http_port = http_port
         self.connection_code = ''.join(random.choices(
             string.ascii_uppercase + string.digits, 
-            k=Constants.CONNECTION_CODE_LENGTH
+            k=6
         ))
-
-        # 클라이언트 관리
-        self._clients: Dict[tuple, ClientInfo] = {}
-        
+        self.client_address = None
+    
         # 시스템 설정
         self.os_type = platform.system()
         pyautogui.FAILSAFE = False
         self.screen_width, self.screen_height = pyautogui.size()
-        self.mouse_speed_multiplier = Constants.MOUSE_SPEED_MULTIPLIER
-
+        
+        # 마우스 제어 설정
+        self.mouse_speed_multiplier = 0.8    # 기본 감도
+        self.mouse_smoothing = 0.3          # 부드러움 계수
+        self.pointer_delay = 0.0            # 포인터 이동 지연 (즉시 이동)
+        
+        # 레이저 포인터 설정
+        self.laser_smoothing = 0.2          # 레이저 모드 부드러움
+        self.laser_sensitivity = 1.0        # 레이저 모드 감도
+        
         # 화면 캡처 설정
         self.screen_capture = mss()
-        self.compression_quality = Constants.SCREEN_COMPRESSION_QUALITY
-        self.scale_factor = Constants.SCREEN_SCALE_FACTOR
-
+        self.compression_quality = 50       # JPEG 압축 품질 (1-100)
+        self.scale_factor = 0.5            # 스트리밍 해상도 스케일
+        
         # 서버 상태
         self.transport = None
         self.protocol = None
+        self.presentation_mode = False
+        
+        # 활동 관리
+        self.last_activity_time = None
+        self.inactivity_timeout = 600      # 10분
         
         # QR 코드 생성
         self._generate_qr_code()
         
-        # 비활성 체크 태스크
-        self._inactivity_check_task = None
-
-        # 마우스 제어 설정
-        self.mouse_speed_multiplier = 0.5  # 기본값을 더 낮게 조정
-        self.mouse_acceleration = 1.1   # 가속 계수를 약간 낮춤
-        self.mouse_smoothing = 0.4     # 부드러움을 약간 높임
-        self.mouse_deadzone = 0.02     # 데드존을 더 작게 설정
+        # 마우스 상태 추적
+        self._last_mouse_pos = pyautogui.position()
+        self._last_update_time = time.time()
         
-        # 마우스 보정 설정
-        self.calibration = {
-            'x_scale': 1.0,
-            'y_scale': 1.0,
-            'x_offset': 0.0,
-            'y_offset': 0.0
-        }
+        # 디버깅 설정
+        self.debug_mode = False            # 디버그 모드
+        
+        # 시스템별 설정
+        if self.os_type == 'Darwin':  # macOS
+            self.mouse_speed_multiplier *= 0.7  # macOS에서는 감도를 약간 낮춤
+        elif self.os_type == 'Windows':
+            self.mouse_speed_multiplier *= 1.2  # Windows에서는 감도를 약간 높임
+        
+        self.logger.info(f"Initialized RemoteControlServer on {self.os_type}")
+        self.logger.info(f"Screen size: {self.screen_width}x{self.screen_height}")
 
     def _generate_qr_code(self):
         """QR 코드 생성"""
